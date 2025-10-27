@@ -1,39 +1,60 @@
 import os
 import logging
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
-    MessageHandler, filters, ContextTypes, JobQueue
+    MessageHandler, filters, ContextTypes, JobQueue,
+    ConversationHandler
 )
 from pytz import timezone
 
-# تنظیمات
+# تنظیمات دیتابیس
+DB_CONFIG = {
+    'dbname': 'study_bot_db',
+    'user': 'postgres',
+    'password': 'password',
+    'host': 'localhost',
+    'port': '5432'
+}
+
+# تنظیمات ربات
 TELEGRAM_TOKEN = "8493311862:AAF0k6E2LHOImAhTdxXMVRxtD4eSI4k_e8Y"
-DATABASE_URL = "YOUR_DATABASE_URL"
 
 # تنظیمات زمان ایران
 IRAN_TZ = timezone('Asia/Tehran')
+
+# حالت‌های گفتگو
+GRADE_SELECTION, ADVISOR_PANEL, STUDENT_PANEL, WAITING_PLAN, PLAN_DAY, PLAN_GRADE, PLAN_SUBJECTS = range(7)
 
 # تنظیم لاگ
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 class StudyBot:
     def __init__(self):
         self.db_connection = self.init_database()
         self.create_tables()
+        self.create_default_admin()
     
     def init_database(self):
         """اتصال به دیتابیس"""
-        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        try:
+            conn = psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+            logger.info("✅ Connected to database successfully")
+            return conn
+        except Exception as e:
+            logger.error(f"❌ Database connection failed: {e}")
+            raise
     
     def create_tables(self):
         """ایجاد جداول مورد نیاز"""
@@ -82,7 +103,7 @@ class StudyBot:
                     day_number INTEGER NOT NULL,
                     start_time TIMESTAMP NOT NULL,
                     end_time TIMESTAMP,
-                    total_duration INTEGER, -- مدت زمان به دقیقه
+                    total_duration INTEGER,
                     status VARCHAR(50) DEFAULT 'in_progress',
                     check_count INTEGER DEFAULT 0,
                     last_check_time TIMESTAMP,
@@ -102,7 +123,35 @@ class StudyBot:
                 )
             """)
             
+            # جدول فعالیت‌های روزانه
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_activities (
+                    id SERIAL PRIMARY KEY,
+                    student_id INTEGER REFERENCES students(id),
+                    activity_date DATE NOT NULL,
+                    total_study_time INTEGER DEFAULT 0,
+                    completed_subjects INTEGER DEFAULT 0,
+                    total_checks INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
             self.db_connection.commit()
+            logger.info("✅ Database tables created successfully")
+    
+    def create_default_admin(self):
+        """ایجاد ادمین پیش‌فرض"""
+        try:
+            with self.db_connection.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO advisors (telegram_id, full_name, is_admin) 
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (telegram_id) DO NOTHING
+                """, (6680287530, "مدیر سیستم", True))  # تغییر به آیدی تلگرام ادمین اصلی
+                self.db_connection.commit()
+                logger.info("✅ Default admin created")
+        except Exception as e:
+            logger.error(f"❌ Error creating default admin: {e}")
     
     # --- توابع مدیریت دانش‌آموزان ---
     
@@ -118,13 +167,21 @@ class StudyBot:
                 advisor_id = EXCLUDED.advisor_id
                 RETURNING id
             """, (telegram_id, full_name, grade, advisor_id))
-            return cursor.fetchone()['id']
+            result = cursor.fetchone()
+            self.db_connection.commit()
+            return result['id'] if result else None
     
     def get_student(self, telegram_id: int):
         """دریافت اطلاعات دانش‌آموز"""
         with self.db_connection.cursor() as cursor:
             cursor.execute("SELECT * FROM students WHERE telegram_id = %s", (telegram_id,))
             return cursor.fetchone()
+    
+    def get_all_students(self):
+        """دریافت تمام دانش‌آموزان"""
+        with self.db_connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM students ORDER BY full_name")
+            return cursor.fetchall()
     
     # --- توابع مدیریت مشاوران ---
     
@@ -139,13 +196,20 @@ class StudyBot:
                 is_admin = EXCLUDED.is_admin
                 RETURNING id
             """, (telegram_id, full_name, is_admin))
-            return cursor.fetchone()['id']
+            result = cursor.fetchone()
+            self.db_connection.commit()
+            return result['id'] if result else None
     
     def get_advisor(self, telegram_id: int):
         """دریافت اطلاعات مشاور"""
         with self.db_connection.cursor() as cursor:
             cursor.execute("SELECT * FROM advisors WHERE telegram_id = %s", (telegram_id,))
             return cursor.fetchone()
+    
+    def is_admin(self, telegram_id: int):
+        """بررسی ادمین بودن"""
+        advisor = self.get_advisor(telegram_id)
+        return advisor and advisor['is_admin']
     
     # --- توابع مدیریت برنامه‌های درسی ---
     
@@ -155,8 +219,9 @@ class StudyBot:
             cursor.execute("""
                 INSERT INTO study_plans (day_number, grade, subjects, created_by)
                 VALUES (%s, %s, %s, %s)
-            """, (day_number, grade, subjects, created_by))
+            """, (day_number, grade, json.dumps(subjects), created_by))
             self.db_connection.commit()
+            return True
     
     def get_study_plan(self, day_number: int, grade: str):
         """دریافت برنامه درسی"""
@@ -166,7 +231,25 @@ class StudyBot:
                 WHERE day_number = %s AND grade = %s
                 ORDER BY created_at DESC LIMIT 1
             """, (day_number, grade))
-            return cursor.fetchone()
+            result = cursor.fetchone()
+            if result and result['subjects']:
+                result['subjects'] = json.loads(result['subjects'])
+            return result
+    
+    def get_all_plans(self):
+        """دریافت تمام برنامه‌ها"""
+        with self.db_connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT sp.*, a.full_name as creator_name
+                FROM study_plans sp
+                LEFT JOIN advisors a ON sp.created_by = a.id
+                ORDER BY sp.day_number DESC, sp.grade
+            """)
+            plans = cursor.fetchall()
+            for plan in plans:
+                if plan['subjects']:
+                    plan['subjects'] = json.loads(plan['subjects'])
+            return plans
     
     # --- توابع مدیریت جلسات مطالعه ---
     
@@ -180,23 +263,25 @@ class StudyBot:
                 VALUES (%s, %s, %s, %s, 'in_progress')
                 RETURNING id
             """, (student_id, subject_name, day_number, start_time))
-            session_id = cursor.fetchone()['id']
+            result = cursor.fetchone()
             self.db_connection.commit()
-            return session_id
+            return result['id'] if result else None
     
     def end_study_session(self, session_id: int):
         """پایان جلسه مطالعه"""
         end_time = datetime.now(IRAN_TZ)
         with self.db_connection.cursor() as cursor:
-            # محاسبه مدت زمان
             cursor.execute("""
                 UPDATE study_sessions 
                 SET end_time = %s, 
                     status = 'completed',
                     total_duration = EXTRACT(EPOCH FROM (%s - start_time))/60
                 WHERE id = %s
+                RETURNING student_id, subject_name, total_duration
             """, (end_time, end_time, session_id))
+            result = cursor.fetchone()
             self.db_connection.commit()
+            return result
     
     def update_check_time(self, session_id: int):
         """به‌روزرسانی زمان آخرین بررسی"""
@@ -208,6 +293,18 @@ class StudyBot:
                 WHERE id = %s
             """, (datetime.now(IRAN_TZ), session_id))
             self.db_connection.commit()
+    
+    def get_active_sessions(self):
+        """دریافت جلسات فعال"""
+        with self.db_connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT s.full_name, ss.subject_name, ss.start_time, ss.check_count, ss.id
+                FROM study_sessions ss
+                JOIN students s ON ss.student_id = s.id
+                WHERE ss.status = 'in_progress'
+                ORDER BY ss.start_time
+            """)
+            return cursor.fetchall()
     
     # --- توابع گزارش‌گیری ---
     
@@ -239,7 +336,8 @@ class StudyBot:
                     ss.start_time,
                     ss.end_time,
                     ss.status,
-                    ss.check_count
+                    ss.check_count,
+                    ss.total_duration
                 FROM students s
                 LEFT JOIN study_sessions ss ON s.id = ss.student_id AND ss.day_number = %s
                 ORDER BY s.full_name, ss.start_time
@@ -249,130 +347,386 @@ class StudyBot:
 # ایجاد نمونه ربات
 study_bot = StudyBot()
 
-# --- handlers ---
+# --- Keyboard Markups ---
+
+def get_main_menu_keyboard():
+    """منوی اصلی"""
+    keyboard = [
+        ["🎓 ثبت نام دانش‌آموز", "👨‍🏫 پنل مشاور"],
+        ["ℹ️ راهنما", "📊 گزارش من"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_grade_selection_keyboard():
+    """انتخاب پایه تحصیلی"""
+    keyboard = [
+        ["🎓 دوازدهم تجربی", "📊 دوازدهم ریاضی"],
+        ["🔙 بازگشت به منوی اصلی"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_student_panel_keyboard():
+    """پنل دانش‌آموز"""
+    keyboard = [
+        ["📚 برنامه امروز", "🎯 شروع مطالعه"],
+        ["📊 گزارش روزانه", "🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_advisor_panel_keyboard():
+    """پنل مشاور"""
+    keyboard = [
+        ["👥 مشاهده دانش‌آموزان", "📊 گزارش کلی"],
+        ["🔍 جلسات فعال", "📋 مدیریت برنامه‌ها"],
+        ["🔙 بازگشت به منوی اصلی"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_admin_panel_keyboard():
+    """پنل ادمین"""
+    keyboard = [
+        ["➕ افزودن برنامه جدید", "📝 مشاهده برنامه‌ها"],
+        ["👥 مدیریت دانش‌آموزان", "👨‍🏫 مدیریت مشاوران"],
+        ["🔙 بازگشت به پنل مشاور"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_back_keyboard():
+    """دکمه بازگشت ساده"""
+    keyboard = [["🔙 بازگشت"]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_study_management_keyboard():
+    """مدیریت مطالعه"""
+    keyboard = [
+        ["✅ پایان مطالعه", "📊 بازگشت به پنل"],
+        ["📚 برنامه امروز"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_progress_check_keyboard():
+    """بررسی ۲۰ دقیقه‌ای"""
+    keyboard = [
+        ["✅ در حال پیشرفت"],
+        ["⚠️ مشکل دارم"],
+        ["❌ متوقف کردم"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+def get_plan_grade_keyboard():
+    """انتخاب پایه برای برنامه"""
+    keyboard = [
+        ["🎓 دوازدهم تجربی", "📊 دوازدهم ریاضی"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_plan_subjects_keyboard():
+    """مدیریت دروس برنامه"""
+    keyboard = [
+        ["پایان"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# --- Handlers ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع ربات"""
     user = update.effective_user
     
-    keyboard = [
-        [InlineKeyboardButton("🎓 دوازدهم تجربی", callback_data="grade_12_exp")],
-        [InlineKeyboardButton("📊 دوازدهم ریاضی", callback_data="grade_12_math")],
-        [InlineKeyboardButton("👨‍🏫 من مشاور هستم", callback_data="advisor_panel")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    welcome_text = (
+        f"👋 سلام {user.first_name}!\n\n"
+        "🤖 به ربات مدیریت مطالعه خوش آمدید!\n\n"
+        "🎯 این ربات به شما کمک می‌کند:\n"
+        "• برنامه‌ریزی درسی منظم\n"
+        "• پیگیری پیشرفت مطالعه\n"
+        "• گزارش‌گیری دقیق\n"
+        "• نظارت مشاوران\n\n"
+        "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
+    )
     
     await update.message.reply_text(
-        f"سلام {user.first_name}!\n"
-        "لطفاً پایه تحصیلی خود را انتخاب کنید:",
-        reply_markup=reply_markup
+        welcome_text,
+        reply_markup=get_main_menu_keyboard()
     )
+    return GRADE_SELECTION
+
+async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت منوی اصلی"""
+    text = update.message.text
+    
+    if text == "🎓 ثبت نام دانش‌آموز":
+        await update.message.reply_text(
+            "🎓 لطفاً پایه تحصیلی خود را انتخاب کنید:",
+            reply_markup=get_grade_selection_keyboard()
+        )
+        return GRADE_SELECTION
+    
+    elif text == "👨‍🏫 پنل مشاور":
+        user = update.effective_user
+        advisor = study_bot.get_advisor(user.id)
+        
+        if not advisor:
+            study_bot.register_advisor(user.id, user.full_name)
+        
+        if study_bot.is_admin(user.id):
+            await update.message.reply_text(
+                "👨‍🏫 پنل مدیریت ادمین\nلطفاً گزینه مورد نظر را انتخاب کنید:",
+                reply_markup=get_admin_panel_keyboard()
+            )
+            return ADVISOR_PANEL
+        else:
+            await update.message.reply_text(
+                "👨‍🏫 پنل مشاور\nلطفاً گزینه مورد نظر را انتخاب کنید:",
+                reply_markup=get_advisor_panel_keyboard()
+            )
+            return ADVISOR_PANEL
+    
+    elif text == "📊 گزارش من":
+        student = study_bot.get_student(update.effective_user.id)
+        if student:
+            await show_student_report(update, context)
+        else:
+            await update.message.reply_text(
+                "❌ شما به عنوان دانش‌آموز ثبت‌نام نکرده‌اید.",
+                reply_markup=get_main_menu_keyboard()
+            )
+    
+    elif text == "ℹ️ راهنما":
+        help_text = (
+            "📖 راهنمای استفاده از ربات:\n\n"
+            "🎓 دانش‌آموزان:\n"
+            "1. ابتدا با انتخاب 'ثبت نام دانش‌آموز' ثبت‌نام کنید\n"
+            "2. برنامه روزانه خود را مشاهده کنید\n"
+            "3. مطالعه هر درس را شروع کنید\n"
+            "4. گزارش پیشرفت خود را ببینید\n\n"
+            "👨‍🏫 مشاوران:\n"
+            "1. به پنل مشاور بروید\n"
+            "2. دانش‌آموزان و فعالیت‌ها را نظارت کنید\n"
+            "3. برنامه‌های درسی تنظیم کنید\n\n"
+            "⏰ ویژگی‌ها:\n"
+            "• پیگیری خودکار زمان مطالعه\n"
+            "• چک‌های ۲۰ دقیقه‌ای\n"
+            "• گزارش‌گیری دقیق\n"
+            "• مدیریت چند پایه تحصیلی"
+        )
+        await update.message.reply_text(help_text, reply_markup=get_main_menu_keyboard())
 
 async def handle_grade_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب پایه تحصیلی"""
-    query = update.callback_query
-    await query.answer()
+    text = update.message.text
     
-    user = query.from_user
-    grade = "دوازدهم تجربی" if "exp" in query.data else "دوازدهم ریاضی"
+    if text == "🔙 بازگشت به منوی اصلی":
+        await update.message.reply_text(
+            "منوی اصلی:",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return GRADE_SELECTION
     
-    # ثبت نام دانش‌آموز
-    student_id = study_bot.register_student(
-        telegram_id=user.id,
-        full_name=user.full_name,
-        grade=grade
+    if text in ["🎓 دوازدهم تجربی", "📊 دوازدهم ریاضی"]:
+        user = update.effective_user
+        grade = "دوازدهم تجربی" if "تجربی" in text else "دوازدهم ریاضی"
+        
+        # ثبت نام دانش‌آموز
+        student_id = study_bot.register_student(
+            telegram_id=user.id,
+            full_name=user.full_name,
+            grade=grade
+        )
+        
+        context.user_data['grade'] = grade
+        context.user_data['student_id'] = student_id
+        
+        await update.message.reply_text(
+            f"✅ ثبت‌نام شما در پایه {grade} با موفقیت انجام شد!\n\n"
+            "اکنون می‌توانید از پنل دانش‌آموزی استفاده کنید:",
+            reply_markup=get_student_panel_keyboard()
+        )
+        return STUDENT_PANEL
+    
+    await update.message.reply_text(
+        "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
+        reply_markup=get_grade_selection_keyboard()
     )
+
+async def handle_student_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت پنل دانش‌آموز"""
+    text = update.message.text
     
-    context.user_data['grade'] = grade
-    context.user_data['student_id'] = student_id
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "منوی اصلی:",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return GRADE_SELECTION
     
-    # نمایش برنامه روز جاری
-    await show_daily_plan(update, context)
+    elif text == "📚 برنامه امروز":
+        await show_daily_plan(update, context)
+    
+    elif text == "🎯 شروع مطالعه":
+        await show_subject_selection(update, context)
+    
+    elif text == "📊 گزارش روزانه":
+        await show_student_report(update, context)
 
 async def show_daily_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش برنامه روزانه"""
-    query = update.callback_query
     user_data = context.user_data
-    
-    # دریافت برنامه روز جاری (می‌توانید منطق تعیین روز را اضافه کنید)
-    current_day = 1  # برای نمونه
     grade = user_data.get('grade')
     
+    if not grade:
+        await update.message.reply_text(
+            "❌ ابتدا باید ثبت‌نام کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
+    
+    # دریافت برنامه روز جاری
+    current_day = 1  # برای نمونه
     plan = study_bot.get_study_plan(current_day, grade)
     
     if not plan:
-        await query.edit_message_text("📝 برنامه‌ای برای امروز تعریف نشده است.")
+        await update.message.reply_text(
+            "📝 برنامه‌ای برای امروز تعریف نشده است.",
+            reply_markup=get_student_panel_keyboard()
+        )
         return
     
-    # ایجاد دکمه‌های دروس
-    keyboard = []
-    subjects = plan['subjects']
-    
-    for subject in subjects:
-        keyboard.append([
-            InlineKeyboardButton(
-                f"📚 {subject['name']}", 
-                callback_data=f"start_subject_{subject['name']}"
-            )
-        ])
-    
-    keyboard.append([InlineKeyboardButton("📊 گزارش روزانه", callback_data="daily_report")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     plan_text = f"📘 برنامه روز {current_day} - {grade}\n\n"
-    for subject in subjects:
+    for subject in plan['subjects']:
         plan_text += f"📚 {subject['name']}\n"
     
-    await query.edit_message_text(
-        plan_text + "\n✅ برای شروع مطالعه روی درس مورد نظر کلیک کنید:",
-        reply_markup=reply_markup
+    await update.message.reply_text(
+        plan_text,
+        reply_markup=get_student_panel_keyboard()
     )
 
-async def start_subject_study(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """شروع مطالعه یک درس"""
-    query = update.callback_query
-    await query.answer()
-    
-    subject_name = query.data.replace("start_subject_", "")
+async def show_subject_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش انتخاب درس برای مطالعه"""
     user_data = context.user_data
+    grade = user_data.get('grade')
     
-    # شروع جلسه مطالعه
-    session_id = study_bot.start_study_session(
-        student_id=user_data['student_id'],
-        subject_name=subject_name,
-        day_number=1  # برای نمونه
-    )
+    if not grade:
+        await update.message.reply_text(
+            "❌ ابتدا باید ثبت‌نام کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
     
-    user_data['current_session'] = session_id
-    user_data['current_subject'] = subject_name
-    start_time = datetime.now(IRAN_TZ).strftime("%H:%M")
+    current_day = 1
+    plan = study_bot.get_study_plan(current_day, grade)
     
-    # ایجاد دکمه‌های مدیریت مطالعه
-    keyboard = [
-        [InlineKeyboardButton("✅ پایان مطالعه", callback_data="end_study")],
-        [InlineKeyboardButton("⏸ توقف موقت", callback_data="pause_study")],
-        [InlineKeyboardButton("📊 بازگشت به برنامه", callback_data="back_to_plan")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    if not plan:
+        await update.message.reply_text(
+            "📝 برنامه‌ای برای امروز تعریف نشده است.",
+            reply_markup=get_student_panel_keyboard()
+        )
+        return
     
-    await query.edit_message_text(
-        f"🎯 مطالعه '{subject_name}' شروع شد!\n"
-        f"🕐 زمان شروع: {start_time}\n"
-        f"⏰ هر ۲۰ دقیقه وضعیت شما چک می‌شود...\n\n"
-        f"✅ پس از اتمام مطالعه، دکمه پایان را بزنید.",
+    # ایجاد کیبورد برای انتخاب درس
+    keyboard = []
+    for subject in plan['subjects']:
+        keyboard.append([f"🎯 شروع مطالعه {subject['name']}"])
+    keyboard.append(["🔙 بازگشت"])
+    
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await update.message.reply_text(
+        "📚 لطفاً درسی که می‌خواهید مطالعه کنید را انتخاب کنید:",
         reply_markup=reply_markup
     )
+    context.user_data['waiting_for_subject'] = True
+
+async def handle_subject_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت شروع مطالعه درس"""
+    if not context.user_data.get('waiting_for_subject'):
+        return await handle_student_panel(update, context)
     
-    # برنامه‌ریزی برای چک‌های ۲۰ دقیقه‌ای
-    context.job_queue.run_repeating(
-        progress_check,
-        interval=1200,  # 20 دقیقه
-        first=1200,
-        chat_id=query.message.chat_id,
-        name=f"check_{session_id}",
-        data=session_id
+    text = update.message.text
+    
+    if text == "🔙 بازگشت":
+        context.user_data.pop('waiting_for_subject', None)
+        await update.message.reply_text(
+            "پنل دانش‌آموز:",
+            reply_markup=get_student_panel_keyboard()
+        )
+        return STUDENT_PANEL
+    
+    if text.startswith("🎯 شروع مطالعه "):
+        subject_name = text.replace("🎯 شروع مطالعه ", "")
+        user_data = context.user_data
+        
+        # شروع جلسه مطالعه
+        session_id = study_bot.start_study_session(
+            student_id=user_data['student_id'],
+            subject_name=subject_name,
+            day_number=1
+        )
+        
+        user_data['current_session'] = session_id
+        user_data['current_subject'] = subject_name
+        user_data['waiting_for_subject'] = False
+        start_time = datetime.now(IRAN_TZ).strftime("%H:%M")
+        
+        await update.message.reply_text(
+            f"🎯 مطالعه '{subject_name}' شروع شد!\n"
+            f"🕐 زمان شروع: {start_time}\n"
+            f"⏰ هر ۲۰ دقیقه وضعیت شما چک می‌شود...\n\n"
+            f"✅ پس از اتمام مطالعه، دکمه پایان را بزنید.",
+            reply_markup=get_study_management_keyboard()
+        )
+        
+        # برنامه‌ریزی برای چک‌های ۲۰ دقیقه‌ای
+        if 'check_jobs' not in context.chat_data:
+            context.chat_data['check_jobs'] = []
+        
+        job = context.job_queue.run_repeating(
+            progress_check,
+            interval=1200,  # 20 دقیقه
+            first=1200,
+            chat_id=update.message.chat_id,
+            name=f"check_{session_id}",
+            data=session_id
+        )
+        context.chat_data['check_jobs'].append(job)
+
+async def end_study_session_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پایان جلسه مطالعه"""
+    user_data = context.user_data
+    session_id = user_data.get('current_session')
+    subject_name = user_data.get('current_subject')
+    
+    if not session_id:
+        await update.message.reply_text(
+            "❌ جلسه مطالعه فعالی ندارید.",
+            reply_markup=get_student_panel_keyboard()
+        )
+        return
+    
+    # پایان جلسه در دیتابیس
+    result = study_bot.end_study_session(session_id)
+    
+    # حذف job چک‌های ۲۰ دقیقه‌ای
+    if 'check_jobs' in context.chat_data:
+        current_jobs = [job for job in context.chat_data['check_jobs'] if job.name == f"check_{session_id}"]
+        for job in current_jobs:
+            job.schedule_removal()
+    
+    end_time = datetime.now(IRAN_TZ).strftime("%H:%M")
+    duration = result['total_duration'] if result else 0
+    
+    await update.message.reply_text(
+        f"🎉 مطالعه '{subject_name}' با موفقیت به پایان رسید!\n"
+        f"🕐 زمان پایان: {end_time}\n"
+        f"⏱ مدت مطالعه: {duration:.0f} دقیقه\n\n"
+        f"📊 می‌توانید گزارش کامل را مشاهده کنید.",
+        reply_markup=get_student_panel_keyboard()
     )
+    
+    # پاک کردن session جاری
+    user_data.pop('current_session', None)
+    user_data.pop('current_subject', None)
 
 async def progress_check(context: ContextTypes.DEFAULT_TYPE):
     """بررسی پیشرفت هر ۲۰ دقیقه"""
@@ -382,186 +736,415 @@ async def progress_check(context: ContextTypes.DEFAULT_TYPE):
     # به‌روزرسانی زمان بررسی
     study_bot.update_check_time(session_id)
     
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ در حال پیشرفت", callback_data=f"check_ok_{session_id}"),
-            InlineKeyboardButton("⚠️ مشکل دارم", callback_data=f"check_problem_{session_id}")
-        ],
-        [InlineKeyboardButton("❌ متوقف کردم", callback_data=f"check_stopped_{session_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await context.bot.send_message(
         chat_id=job.chat_id,
         text="🔍 بررسی ۲۰ دقیقه‌ای\nوضعیت مطالعه شما چگونه است؟",
-        reply_markup=reply_markup
+        reply_markup=get_progress_check_keyboard()
     )
 
 async def handle_progress_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت پاسخ به بررسی ۲۰ دقیقه‌ای"""
-    query = update.callback_query
-    await query.answer()
-    
-    response_data = query.data
-    session_id = int(response_data.split("_")[-1])
-    response_type = response_data.split("_")[1]
+    text = update.message.text
     
     responses = {
-        "ok": "در حال پیشرفت",
-        "problem": "مشکل دارم", 
-        "stopped": "متوقف کردم"
+        "✅ در حال پیشرفت": "در حال پیشرفت",
+        "⚠️ مشکل دارم": "مشکل دارم", 
+        "❌ متوقف کردم": "متوقف کردم"
     }
     
-    await query.edit_message_text(
-        f"📝 وضعیت شما ثبت شد: {responses[response_type]}\n"
-        f"✅ به مطالعه ادامه دهید..."
+    response_text = responses.get(text, "نامشخص")
+    
+    await update.message.reply_text(
+        f"📝 وضعیت شما ثبت شد: {response_text}\n"
+        f"✅ به مطالعه ادامه دهید...",
+        reply_markup=get_study_management_keyboard()
     )
-    
-    # در اینجا می‌توانید پاسخ را در دیتابیس ذخیره کنید
 
-async def end_study_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پایان جلسه مطالعه"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_data = context.user_data
-    session_id = user_data.get('current_session')
-    subject_name = user_data.get('current_subject')
-    
-    if session_id:
-        # پایان جلسه در دیتابیس
-        study_bot.end_study_session(session_id)
-        
-        # حذف job چک‌های ۲۰ دقیقه‌ای
-        current_jobs = context.job_queue.get_jobs_by_name(f"check_{session_id}")
-        for job in current_jobs:
-            job.schedule_removal()
-        
-        end_time = datetime.now(IRAN_TZ).strftime("%H:%M")
-        
-        await query.edit_message_text(
-            f"🎉 مطالعه '{subject_name}' با موفقیت به پایان رسید!\n"
-            f"🕐 زمان پایان: {end_time}\n\n"
-            f"📊 می‌توانید گزارش کامل را مشاهده کنید."
-        )
-        
-        # پاک کردن session جاری
-        user_data.pop('current_session', None)
-        user_data.pop('current_subject', None)
-
-async def show_daily_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش گزارش روزانه"""
-    query = update.callback_query
-    await query.answer()
-    
+async def show_student_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش گزارش روزانه دانش‌آموز"""
     user_data = context.user_data
     student_id = user_data.get('student_id')
+    
+    if not student_id:
+        await update.message.reply_text(
+            "❌ ابتدا باید ثبت‌نام کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
     
     report = study_bot.get_daily_report(student_id, day_number=1)
     
     if not report:
-        await query.edit_message_text("📊 هیچ فعالیتی برای امروز ثبت نشده است.")
+        await update.message.reply_text(
+            "📊 هیچ فعالیتی برای امروز ثبت نشده است.",
+            reply_markup=get_student_panel_keyboard()
+        )
         return
     
     report_text = "📊 گزارش فعالیت‌های امروز\n\n"
     total_duration = 0
+    completed_subjects = 0
     
     for activity in report:
         start_time = activity['start_time'].astimezone(IRAN_TZ).strftime("%H:%M")
         end_time = activity['end_time'].astimezone(IRAN_TZ).strftime("%H:%M") if activity['end_time'] else "در حال مطالعه"
         duration = activity['total_duration'] or 0
         
+        status_icon = "✅" if activity['status'] == 'completed' else "🟡"
+        
         report_text += (
-            f"📚 {activity['subject_name']}\n"
+            f"{status_icon} {activity['subject_name']}\n"
             f"🕐 {start_time} - {end_time}\n"
-            f"⏱ {duration} دقیقه | 🔍 {activity['check_count']} بار بررسی\n"
-            f"📊 وضعیت: {activity['status']}\n\n"
+            f"⏱ {duration:.0f} دقیقه | 🔍 {activity['check_count']} بار بررسی\n\n"
         )
         
         total_duration += duration
+        if activity['status'] == 'completed':
+            completed_subjects += 1
     
-    report_text += f"✅ مجموع زمان مطالعه: {total_duration} دقیقه"
+    report_text += f"📈 جمع‌بندی:\n"
+    report_text += f"✅ دروس تکمیل شده: {completed_subjects}\n"
+    report_text += f"⏱ کل زمان مطالعه: {total_duration:.0f} دقیقه\n"
+    report_text += f"📚 میانگین زمان هر درس: {total_duration/len(report) if report else 0:.1f} دقیقه"
     
-    keyboard = [[InlineKeyboardButton("🔙 بازگشت به برنامه", callback_data="back_to_plan")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(report_text, reply_markup=reply_markup)
-
-async def advisor_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پنل مشاور"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = query.from_user
-    
-    # ثبت/بررسی مشاور
-    advisor = study_bot.get_advisor(user.id)
-    if not advisor:
-        study_bot.register_advisor(user.id, user.full_name, is_admin=True)
-    
-    keyboard = [
-        [InlineKeyboardButton("👥 مشاهده دانش‌آموزان", callback_data="view_students")],
-        [InlineKeyboardButton("📊 گزارش روزانه کلی", callback_data="daily_overview")],
-        [InlineKeyboardButton("📋 ارسال برنامه جدید", callback_data="send_new_plan")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "👨‍🏫 پنل مدیریت مشاور\n"
-        "لطفاً گزینه مورد نظر را انتخاب کنید:",
-        reply_markup=reply_markup
+    await update.message.reply_text(
+        report_text, 
+        reply_markup=get_student_panel_keyboard()
     )
 
-async def daily_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """گزارش کلی روزانه برای مشاور"""
-    query = update.callback_query
-    await query.answer()
+# --- Advisor Handlers ---
+
+async def handle_advisor_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت پنل مشاور"""
+    text = update.message.text
     
+    if text == "🔙 بازگشت به منوی اصلی":
+        await update.message.reply_text(
+            "منوی اصلی:",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return GRADE_SELECTION
+    
+    elif text == "🔙 بازگشت به پنل مشاور":
+        if study_bot.is_admin(update.effective_user.id):
+            await update.message.reply_text(
+                "👨‍🏫 پنل مدیریت ادمین:",
+                reply_markup=get_admin_panel_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "👨‍🏫 پنل مشاور:",
+                reply_markup=get_advisor_panel_keyboard()
+            )
+        return ADVISOR_PANEL
+    
+    elif text == "👥 مشاهده دانش‌آموزان":
+        await show_students_list(update, context)
+    
+    elif text == "📊 گزارش کلی":
+        await show_daily_overview(update, context)
+    
+    elif text == "🔍 جلسات فعال":
+        await show_active_sessions(update, context)
+    
+    elif text == "📋 مدیریت برنامه‌ها":
+        if study_bot.is_admin(update.effective_user.id):
+            await update.message.reply_text(
+                "📋 پنل مدیریت برنامه‌ها:",
+                reply_markup=get_admin_panel_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ فقط ادمین‌ها می‌توانند برنامه‌ها را مدیریت کنند.",
+                reply_markup=get_advisor_panel_keyboard()
+            )
+    
+    elif text == "➕ افزودن برنامه جدید":
+        await update.message.reply_text(
+            "📝 لطفاً شماره روز برنامه را وارد کنید:",
+            reply_markup=get_back_keyboard()
+        )
+        context.user_data['plan_creation'] = {'step': 'day'}
+        return PLAN_DAY
+    
+    elif text == "📝 مشاهده برنامه‌ها":
+        await show_all_plans(update, context)
+
+async def show_students_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش لیست دانش‌آموزان"""
+    students = study_bot.get_all_students()
+    
+    if not students:
+        await update.message.reply_text(
+            "👥 هیچ دانش‌آموزی ثبت‌نام نکرده است.",
+            reply_markup=get_advisor_panel_keyboard()
+        )
+        return
+    
+    report_text = "👥 لیست دانش‌آموزان\n\n"
+    
+    for i, student in enumerate(students, 1):
+        report_text += f"{i}. {student['full_name']} - {student['grade']}\n"
+    
+    await update.message.reply_text(
+        report_text,
+        reply_markup=get_advisor_panel_keyboard()
+    )
+
+async def show_daily_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """گزارش کلی روزانه برای مشاور"""
     activities = study_bot.get_all_students_daily_activity(day_number=1)
     
     if not activities:
-        await query.edit_message_text("📊 هیچ فعالیتی برای امروز ثبت نشده است.")
+        await update.message.reply_text(
+            "📊 هیچ فعالیتی برای امروز ثبت نشده است.",
+            reply_markup=get_advisor_panel_keyboard()
+        )
         return
     
     report_text = "📊 گزارش کلی فعالیت‌های امروز\n\n"
     current_student = None
+    student_count = 0
     
     for activity in activities:
         if activity['full_name'] != current_student:
             current_student = activity['full_name']
+            student_count += 1
             report_text += f"\n👤 {current_student} ({activity['grade']})\n"
         
         if activity['subject_name']:
             start_time = activity['start_time'].astimezone(IRAN_TZ).strftime("%H:%M")
             status_icon = "✅" if activity['status'] == 'completed' else "🟡"
+            duration = activity['total_duration'] or 0
             
             report_text += (
                 f"{status_icon} {activity['subject_name']} | "
                 f"🕐 {start_time} | "
+                f"⏱ {duration:.0f}دقیقه | "
                 f"🔍 {activity['check_count']} بار\n"
             )
+        else:
+            report_text += "❌ هیچ فعالیتی ثبت نشده\n"
     
-    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="advisor_panel")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    report_text += f"\n📈 جمع‌بندی:\n"
+    report_text += f"👥 تعداد دانش‌آموزان: {student_count}\n"
     
-    await query.edit_message_text(report_text, reply_markup=reply_markup)
+    await update.message.reply_text(
+        report_text,
+        reply_markup=get_advisor_panel_keyboard()
+    )
+
+async def show_active_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش جلسات فعال"""
+    active_sessions = study_bot.get_active_sessions()
+    
+    if not active_sessions:
+        await update.message.reply_text(
+            "🔍 هیچ جلسه فعالی در حال حاضر وجود ندارد.",
+            reply_markup=get_advisor_panel_keyboard()
+        )
+        return
+    
+    report_text = "🔍 جلسات مطالعه فعال\n\n"
+    
+    for session in active_sessions:
+        start_time = session['start_time'].astimezone(IRAN_TZ).strftime("%H:%M")
+        duration = (datetime.now(IRAN_TZ) - session['start_time']).seconds // 60
+        
+        report_text += (
+            f"👤 {session['full_name']}\n"
+            f"📚 {session['subject_name']}\n"
+            f"🕐 شروع: {start_time} | ⏱ مدت: {duration} دقیقه\n"
+            f"🔍 تعداد بررسی: {session['check_count']} بار\n"
+            f"────────────────────\n"
+        )
+    
+    await update.message.reply_text(
+        report_text,
+        reply_markup=get_advisor_panel_keyboard()
+    )
+
+async def show_all_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش تمام برنامه‌ها"""
+    plans = study_bot.get_all_plans()
+    
+    if not plans:
+        await update.message.reply_text(
+            "📝 هیچ برنامه‌ای تعریف نشده است.",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return
+    
+    report_text = "📋 لیست برنامه‌های درسی\n\n"
+    
+    for plan in plans:
+        report_text += (
+            f"📘 روز {plan['day_number']} - {plan['grade']}\n"
+            f"👤 ایجاد شده توسط: {plan['creator_name'] or 'نامشخص'}\n"
+            f"📚 دروس: {', '.join([s['name'] for s in plan['subjects']])}\n"
+            f"────────────────────\n"
+        )
+    
+    await update.message.reply_text(
+        report_text,
+        reply_markup=get_admin_panel_keyboard()
+    )
+
+# --- Plan Creation Handlers ---
+
+async def handle_plan_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت شماره روز برنامه"""
+    text = update.message.text
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "👨‍🏫 پنل مدیریت ادمین:",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return ADVISOR_PANEL
+    
+    try:
+        day_number = int(text)
+        context.user_data['plan_creation']['day'] = day_number
+        
+        await update.message.reply_text(
+            "🎓 لطفاً پایه تحصیلی را انتخاب کنید:",
+            reply_markup=get_plan_grade_keyboard()
+        )
+        return PLAN_GRADE
+    
+    except ValueError:
+        await update.message.reply_text(
+            "❌ لطفاً یک عدد معتبر برای شماره روز وارد کنید:",
+            reply_markup=get_back_keyboard()
+        )
+
+async def handle_plan_grade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت پایه تحصیلی"""
+    text = update.message.text
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "📝 لطفاً شماره روز برنامه را وارد کنید:",
+            reply_markup=get_back_keyboard()
+        )
+        return PLAN_DAY
+    
+    if text in ["🎓 دوازدهم تجربی", "📊 دوازدهم ریاضی"]:
+        grade = "دوازدهم تجربی" if "تجربی" in text else "دوازدهم ریاضی"
+        context.user_data['plan_creation']['grade'] = grade
+        context.user_data['plan_creation']['subjects'] = []
+        
+        await update.message.reply_text(
+            f"📝 حالا نام دروس را به ترتیب وارد کنید.\n"
+            f"پس از اتمام هر درس، 'ادامه' را بزنید یا 'پایان' برای اتمام.\n\n"
+            f"درس اول را وارد کنید:",
+            reply_markup=get_plan_subjects_keyboard()
+        )
+        return PLAN_SUBJECTS
+    
+    await update.message.reply_text(
+        "لطفاً یکی از پایه‌ها را انتخاب کنید:",
+        reply_markup=get_plan_grade_keyboard()
+    )
+
+async def handle_plan_subjects(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت دروس برنامه"""
+    text = update.message.text
+    plan_data = context.user_data['plan_creation']
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "🎓 لطفاً پایه تحصیلی را انتخاب کنید:",
+            reply_markup=get_plan_grade_keyboard()
+        )
+        return PLAN_GRADE
+    
+    if text.lower() in ["پایان", "تمام", "end"]:
+        # ذخیره برنامه
+        if not plan_data['subjects']:
+            await update.message.reply_text(
+                "❌ حداقل یک درس باید اضافه کنید. لطفاً نام درس را وارد کنید:",
+                reply_markup=get_plan_subjects_keyboard()
+            )
+            return PLAN_SUBJECTS
+        
+        success = study_bot.create_study_plan(
+            day_number=plan_data['day'],
+            grade=plan_data['grade'],
+            subjects=[{'name': subject} for subject in plan_data['subjects']],
+            created_by=study_bot.get_advisor(update.effective_user.id)['id']
+        )
+        
+        if success:
+            await update.message.reply_text(
+                f"✅ برنامه روز {plan_data['day']} برای پایه {plan_data['grade']} با موفقیت ایجاد شد!\n\n"
+                f"📚 دروس: {', '.join(plan_data['subjects'])}",
+                reply_markup=get_admin_panel_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ خطا در ایجاد برنامه. لطفاً مجدداً تلاش کنید.",
+                reply_markup=get_admin_panel_keyboard()
+            )
+        
+        context.user_data.pop('plan_creation', None)
+        return ADVISOR_PANEL
+    
+    # اضافه کردن درس جدید
+    subject_name = text.strip()
+    plan_data['subjects'].append(subject_name)
+    
+    await update.message.reply_text(
+        f"✅ درس '{subject_name}' اضافه شد.\n\n"
+        f"درس بعدی را وارد کنید یا 'پایان' را بزنید:",
+        reply_markup=get_plan_subjects_keyboard()
+    )
+
+# --- Main Function ---
 
 def main():
     """تابع اصلی اجرای ربات"""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(handle_grade_selection, pattern="^grade_"))
-    application.add_handler(CallbackQueryHandler(start_subject_study, pattern="^start_subject_"))
-    application.add_handler(CallbackQueryHandler(end_study_session, pattern="^end_study"))
-    application.add_handler(CallbackQueryHandler(handle_progress_response, pattern="^check_"))
-    application.add_handler(CallbackQueryHandler(show_daily_report, pattern="^daily_report"))
-    application.add_handler(CallbackQueryHandler(advisor_panel, pattern="^advisor_panel"))
-    application.add_handler(CallbackQueryHandler(daily_overview, pattern="^daily_overview"))
-    application.add_handler(CallbackQueryHandler(show_daily_plan, pattern="^back_to_plan"))
+    # تعریف Conversation Handler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            GRADE_SELECTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
+            ],
+            STUDENT_PANEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_panel),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_subject_selection),
+            ],
+            ADVISOR_PANEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_panel)
+            ],
+            PLAN_DAY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_day)
+            ],
+            PLAN_GRADE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_grade)
+            ],
+            PLAN_SUBJECTS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_subjects)
+            ]
+        },
+        fallbacks=[CommandHandler("start", start)]
+    )
+    
+    application.add_handler(conv_handler)
+    
+    # handlers اضافی برای مدیریت study sessions
+    application.add_handler(MessageHandler(filters.Regex("^✅ پایان مطالعه$"), end_study_session_handler))
+    application.add_handler(MessageHandler(
+        filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم)$"), 
+        handle_progress_response
+    ))
     
     # اجرای ربات
+    print("🤖 ربات مطالعه شروع به کار کرد...")
     application.run_polling()
 
 if __name__ == "__main__":
