@@ -19,7 +19,7 @@ from pytz import timezone
 DB_CONFIG = {
     'dbname': 'study_bot_db',
     'user': 'postgres',
-    'password': 'password',
+    'password': 'f13821382',
     'host': 'localhost',
     'port': '5432'
 }
