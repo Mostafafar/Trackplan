@@ -1285,7 +1285,7 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
             ],
             STUDENT_PANEL: [
                 MessageHandler(filters.Regex(r"^(✅ پایان مطالعه|🔄 تغییر درس|📊 بازگشت به پنل|📊 گزارش روزانه|🎯 شروع مطالعه جدید|🔙 بازگشت)$"), handle_student_panel),
