@@ -694,6 +694,7 @@ async def show_all_study_plans_to_student(update: Update, context: ContextTypes.
         reply_markup=get_main_menu_keyboard()
     )
 
+
 async def handle_grade_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب پایه تحصیلی"""
     text = update.message.text
@@ -799,6 +800,26 @@ async def handle_advisor_selection(update: Update, context: ContextTypes.DEFAULT
         "لطفاً یکی از مشاوران را انتخاب کنید:",
         reply_markup=get_advisors_keyboard(grade)
     )
+
+# --- تغییرات در تابع get_advisors_keyboard ---
+
+def get_advisors_keyboard(grade: str):
+    """ایجاد دکمه‌های مشاوران برای یک پایه"""
+    advisors = get_advisors_with_plans_for_grade(grade)
+    
+    # اگر هیچ مشاوری برای این پایه برنامه ندارد، تمام مشاوران را نشان بده
+    if not advisors:
+        advisors = get_all_advisors_for_selection()
+    
+    if not advisors:
+        return None
+    
+    keyboard = []
+    for advisor in advisors:
+        keyboard.append([f"👤 {advisor['full_name']}"])
+    
+    keyboard.append(["🔙 بازگشت"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def handle_day_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب روز"""
@@ -1626,7 +1647,7 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
             ],
             SELECT_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
@@ -1660,7 +1681,8 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisors_management)
             ]
         },
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True
     )
     
     application.add_handler(conv_handler)
@@ -1668,6 +1690,3 @@ def main():
     # شروع ربات
     logger.info("🤖 ربات شروع به کار کرد...")
     application.run_polling()
-
-if __name__ == '__main__':
-    main()
