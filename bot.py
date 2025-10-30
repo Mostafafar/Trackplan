@@ -1690,3 +1690,5 @@ def main():
     # شروع ربات
     logger.info("🤖 ربات شروع به کار کرد...")
     application.run_polling()
+if __name__ == '__main__':
+    main()
