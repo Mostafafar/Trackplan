@@ -31,7 +31,7 @@ TELEGRAM_TOKEN = "8493311862:AAF0k6E2LHOImAhTdxXMVRxtD4eSI4k_e8Y"
 IRAN_TZ = timezone('Asia/Tehran')
 
 # حالت‌های گفتگو
-GRADE_SELECTION, STUDENT_PANEL, ADMIN_PANEL, WAITING_PLAN, PLAN_DAY, PLAN_GRADE, PLAN_SUBJECTS, BROADCAST_MESSAGE, SELECT_DAY, SELECT_SUBJECT, SELECT_ADVISOR = range(11)
+GRADE_SELECTION, STUDENT_PANEL, ADMIN_PANEL, WAITING_PLAN, PLAN_DAY, PLAN_GRADE, PLAN_SUBJECTS, BROADCAST_MESSAGE, SELECT_DAY, SELECT_SUBJECT, SELECT_ADVISOR, ADD_ADVISOR = range(12)
 
 # تنظیم لاگ
 logging.basicConfig(
@@ -46,7 +46,6 @@ def get_db_connection():
     """اتصال به دیتابیس"""
     try:
         conn = psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
-        logger.info("✅ Connected to database successfully")
         return conn
     except Exception as e:
         logger.error(f"❌ Database connection failed: {e}")
@@ -104,31 +103,6 @@ def init_database():
                 status VARCHAR(50) DEFAULT 'in_progress',
                 check_count INTEGER DEFAULT 0,
                 last_check_time TIMESTAMP,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        
-        # جدول گزارش‌های ۲۰ دقیقه‌ای
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS progress_checks (
-                id SERIAL PRIMARY KEY,
-                session_id INTEGER REFERENCES study_sessions(id),
-                check_time TIMESTAMP NOT NULL,
-                student_response VARCHAR(50),
-                response_time TIMESTAMP,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        
-        # جدول فعالیت‌های روزانه
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS daily_activities (
-                id SERIAL PRIMARY KEY,
-                student_id INTEGER REFERENCES students(id),
-                activity_date DATE NOT NULL,
-                total_study_time INTEGER DEFAULT 0,
-                completed_subjects INTEGER DEFAULT 0,
-                total_checks INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
@@ -367,6 +341,15 @@ def get_advisors_with_plans_for_grade(grade: str):
     conn.close()
     return result
 
+def get_all_advisors_for_selection():
+    """دریافت تمام مشاوران برای انتخاب"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT id, full_name FROM advisors ORDER BY full_name")
+        result = cursor.fetchall()
+    conn.close()
+    return result
+
 # --- توابع مدیریت جلسات مطالعه ---
 
 def start_study_session(student_id: int, subject_name: str, day_number: int):
@@ -520,7 +503,7 @@ def get_admin_panel_keyboard():
         ["➕ افزودن برنامه جدید", "📝 مشاهده برنامه‌ها"],
         ["👥 مشاهده دانش‌آموزان", "📊 گزارش کلی"],
         ["🔍 جلسات فعال", "📢 ارسال پیام همگانی"],
-        ["🔙 بازگشت به منوی اصلی"]
+        ["👨‍🏫 مدیریت مشاوران", "🔙 بازگشت به منوی اصلی"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -569,9 +552,22 @@ def get_broadcast_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def get_advisors_management_keyboard():
+    """مدیریت مشاوران"""
+    keyboard = [
+        ["➕ افزودن مشاور جدید"],
+        ["📋 لیست مشاوران"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 def get_advisors_keyboard(grade: str):
     """ایجاد دکمه‌های مشاوران برای یک پایه"""
     advisors = get_advisors_with_plans_for_grade(grade)
+    
+    if not advisors:
+        # اگر هیچ مشاوری برای این پایه برنامه ندارد، تمام مشاوران را نشان بده
+        advisors = get_all_advisors_for_selection()
     
     if not advisors:
         return None
@@ -617,59 +613,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع ربات"""
     user = update.effective_user
     
-    # متن برنامه درسی امروز
-    study_plan_text = (
-        "🎯 برنامه درسی امروز:\n\n"
-        "✅ زیست۱۰: تست (سرخرگ و مویرگ)\n"
-        "✅ شیمی۱۲: تست (محاسبات درجه یونش و ثابت تعادل)\n"
-        "✅ فیزیک۱۲: تست (مسائل فرمولی حرکت با شتاب ثابت)\n"
-        "📚 زیست۱۲: مراحل ترجمه و مقدار پروتئین‌سازی\n"
-        "📐 ریاضی۱۲: اتحاد و نسبت مثلثاتی و رادیان\n"
-        "📘 فیزیک۱۰: پایستگی انرژی و انرژی درونی\n\n"
-        "🤖 به ربات مدیریت مطالعه خوش آمدید!\n"
+    # متن خوش‌آمدگویی
+    welcome_text = (
+        "🤖 به ربات مدیریت مطالعه خوش آمدید!\n\n"
+        "🎯 این ربات به شما کمک می‌کند:\n"
+        "• برنامه‌ریزی درسی داشته باشید\n"
+        "• جلسات مطالعه را مدیریت کنید\n"
+        "• پیشرفت خود را پیگیری کنید\n\n"
         "برای شروع از گزینه‌های زیر استفاده کنید:"
     )
     
     # بررسی ادمین بودن
     if is_admin(user.id):
         await update.message.reply_text(
-            study_plan_text,
+            welcome_text,
             reply_markup=get_admin_panel_keyboard()
         )
         return ADMIN_PANEL
     
     # برای کاربران عادی
     await update.message.reply_text(
-        study_plan_text,
+        welcome_text,
         reply_markup=get_main_menu_keyboard()
     )
     return GRADE_SELECTION
-
-async def show_all_study_plans_to_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش برنامه‌های درسی به دانش‌آموز"""
-    plans = get_all_plans()
-    
-    if not plans:
-        await update.message.reply_text(
-            "📝 در حال حاضر هیچ برنامه درسی موجود نیست.",
-            reply_markup=get_main_menu_keyboard()
-        )
-        return
-    
-    plans_text = "📚 برنامه‌های درسی موجود:\n\n"
-    
-    for plan in plans:
-        plans_text += (
-            f"📘 روز {plan['day_number']} - {plan['grade']}\n"
-            f"👤 مشاور: {plan['creator_name']}\n"
-            f"📚 دروس: {', '.join([s['name'] for s in plan['subjects']])}\n"
-            f"────────────────────\n"
-        )
-    
-    await update.message.reply_text(
-        plans_text,
-        reply_markup=get_main_menu_keyboard()
-    )
 
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت منوی اصلی"""
@@ -700,6 +667,32 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "لطفاً یکی از گزینه‌های منو را انتخاب کنید:",
             reply_markup=get_main_menu_keyboard()
         )
+
+async def show_all_study_plans_to_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش برنامه‌های درسی به دانش‌آموز"""
+    plans = get_all_plans()
+    
+    if not plans:
+        await update.message.reply_text(
+            "📝 در حال حاضر هیچ برنامه درسی موجود نیست.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
+    
+    plans_text = "📚 برنامه‌های درسی موجود:\n\n"
+    
+    for plan in plans:
+        plans_text += (
+            f"📘 روز {plan['day_number']} - {plan['grade']}\n"
+            f"👤 مشاور: {plan['creator_name']}\n"
+            f"📚 دروس: {', '.join([s['name'] for s in plan['subjects']])}\n"
+            f"────────────────────\n"
+        )
+    
+    await update.message.reply_text(
+        plans_text,
+        reply_markup=get_main_menu_keyboard()
+    )
 
 async def handle_grade_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب پایه تحصیلی"""
@@ -757,7 +750,7 @@ async def handle_advisor_selection(update: Update, context: ContextTypes.DEFAULT
         advisor_name = text.replace("👤 ", "")
         
         # پیدا کردن آیدی مشاور
-        advisors = get_advisors_with_plans_for_grade(grade)
+        advisors = get_all_advisors_for_selection()
         selected_advisor = None
         for advisor in advisors:
             if advisor['full_name'] == advisor_name:
@@ -788,10 +781,12 @@ async def handle_advisor_selection(update: Update, context: ContextTypes.DEFAULT
         days_keyboard = get_days_keyboard(grade, selected_advisor['id'])
         if not days_keyboard:
             await update.message.reply_text(
-                f"❌ مشاور {advisor_name} برای پایه {grade} هیچ برنامه‌ای ندارد.",
-                reply_markup=get_advisors_keyboard(grade)
+                f"✅ ثبت‌نام شما در پایه {grade} با مشاور {advisor_name} انجام شد!\n\n"
+                f"📝 در حال حاضر مشاور شما برنامه‌ای برای این پایه ندارد.\n"
+                f"لطفاً منتظر بمانید یا با مشاور خود تماس بگیرید.",
+                reply_markup=get_student_panel_keyboard()
             )
-            return SELECT_ADVISOR
+            return STUDENT_PANEL
         
         await update.message.reply_text(
             f"✅ ثبت‌نام شما در پایه {grade} با مشاور {advisor_name} با موفقیت انجام شد!\n\n"
@@ -1063,6 +1058,8 @@ async def show_student_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=get_student_panel_keyboard()
     )
 
+# --- Admin Handlers ---
+
 async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت پنل ادمین"""
     text = update.message.text
@@ -1102,11 +1099,109 @@ async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return BROADCAST_MESSAGE
     
+    elif text == "👨‍🏫 مدیریت مشاوران":
+        await update.message.reply_text(
+            "👨‍🏫 مدیریت مشاوران\n\n"
+            "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
+            reply_markup=get_advisors_management_keyboard()
+        )
+        return ADD_ADVISOR
+    
     else:
         await update.message.reply_text(
             "لطفاً یکی از گزینه‌های منو را انتخاب کنید:",
             reply_markup=get_admin_panel_keyboard()
         )
+
+async def handle_advisors_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت مشاوران"""
+    text = update.message.text
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "پنل مدیریت:",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return ADMIN_PANEL
+    
+    elif text == "➕ افزودن مشاور جدید":
+        await update.message.reply_text(
+            "👨‍🏫 افزودن مشاور جدید\n\n"
+            "لطفاً اطلاعات مشاور را به این فرمت وارد کنید:\n"
+            "آیدی_تلگرام,نام_کامل\n\n"
+            "مثال:\n"
+            "123456789,احمد احمدی",
+            reply_markup=get_back_keyboard()
+        )
+        context.user_data['awaiting_advisor_info'] = True
+        return ADD_ADVISOR
+    
+    elif text == "📋 لیست مشاوران":
+        advisors = get_all_advisors()
+        if not advisors:
+            await update.message.reply_text(
+                "❌ هیچ مشاوری ثبت نشده است.",
+                reply_markup=get_advisors_management_keyboard()
+            )
+            return ADD_ADVISOR
+        
+        advisors_text = "👨‍🏫 لیست مشاوران:\n\n"
+        for advisor in advisors:
+            role = "👑 مدیر" if advisor['is_admin'] else "👤 مشاور"
+            advisors_text += f"{role} - {advisor['full_name']}\n"
+            advisors_text += f"🆔 آیدی: {advisor['telegram_id']}\n"
+            advisors_text += f"📅 تاریخ ثبت: {advisor['created_at'].astimezone(IRAN_TZ).strftime('%Y-%m-%d %H:%M')}\n"
+            advisors_text += "────────────────────\n"
+        
+        await update.message.reply_text(
+            advisors_text,
+            reply_markup=get_advisors_management_keyboard()
+        )
+    
+    else:
+        # پردازش اطلاعات مشاور جدید
+        if context.user_data.get('awaiting_advisor_info'):
+            try:
+                parts = text.split(',')
+                if len(parts) != 2:
+                    raise ValueError
+                
+                telegram_id = int(parts[0].strip())
+                full_name = parts[1].strip()
+                
+                # ثبت مشاور جدید
+                advisor_id = register_advisor(telegram_id, full_name, False)
+                
+                if advisor_id:
+                    await update.message.reply_text(
+                        f"✅ مشاور جدید با موفقیت ثبت شد!\n\n"
+                        f"👤 نام: {full_name}\n"
+                        f"🆔 آیدی: {telegram_id}",
+                        reply_markup=get_advisors_management_keyboard()
+                    )
+                else:
+                    await update.message.reply_text(
+                        "❌ خطا در ثبت مشاور.",
+                        reply_markup=get_advisors_management_keyboard()
+                    )
+                
+                context.user_data.pop('awaiting_advisor_info', None)
+                
+            except (ValueError, IndexError):
+                await update.message.reply_text(
+                    "❌ فرمت اطلاعات صحیح نیست.\n"
+                    "لطفاً به این فرمت وارد کنید:\n"
+                    "آیدی_تلگرام,نام_کامل\n\n"
+                    "مثال:\n"
+                    "123456789,احمد احمدی",
+                    reply_markup=get_back_keyboard()
+                )
+            except Exception as e:
+                await update.message.reply_text(
+                    f"❌ خطا در ثبت مشاور: {e}",
+                    reply_markup=get_advisors_management_keyboard()
+                )
+                context.user_data.pop('awaiting_advisor_info', None)
 
 async def handle_plan_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دریافت شماره روز برای برنامه جدید"""
@@ -1560,6 +1655,9 @@ def main():
             ],
             BROADCAST_MESSAGE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_message)
+            ],
+            ADD_ADVISOR: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisors_management)
             ]
         },
         fallbacks=[CommandHandler('cancel', cancel)]
