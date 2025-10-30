@@ -1280,30 +1280,54 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """تابع اصلی اجرای ربات"""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # اضافه کردن job_queue به application
-    job_queue = application.job_queue
-    
+
+    # فعال کردن لاگ‌های دقیق برای دیباگ (اختیاری)
+    # logging.getLogger().setLevel(logging.DEBUG)
+
     # Conversation Handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
+            # --- حالت انتخاب پایه تحصیلی (ثبت‌نام) ---
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
+                MessageHandler(
+                    filters.Regex(r"^(🎓 ثبت نام دانش‌آموز|📚 برنامه‌های درسی|📊 گزارش من)$"),
+                    handle_main_menu
+                ),
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^(🎓 ثبت نام دانش‌آموز|📚 برنامه‌های درسی|📊 گزارش من)$"),
+                    handle_grade_selection
+                ),
             ],
-            STUDENT_PANEL: [
-                MessageHandler(filters.Regex(r"^(✅ پایان مطالعه|🔄 تغییر درس|📊 بازگشت به پنل|📊 گزارش روزانه|🎯 شروع مطالعه جدید|🔙 بازگشت)$"), handle_student_panel),
-                MessageHandler(filters.Regex(r"^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم)$"), handle_progress_response),
-            ],
-            ADMIN_PANEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
-            ],
+
+            # --- حالت انتخاب روز ---
             SELECT_DAY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_day_selection)
             ],
+
+            # --- حالت انتخاب درس ---
             SELECT_SUBJECT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_subject_selection)
             ],
+
+            # --- پنل دانش‌آموز ---
+            STUDENT_PANEL: [
+                MessageHandler(
+                    filters.Regex(r"^(✅ پایان مطالعه|🔄 تغییر درس|📊 بازگشت به پنل|📊 گزارش روزانه|🎯 شروع مطالعه جدید|🔙 بازگشت)$"),
+                    handle_student_panel
+                ),
+                MessageHandler(
+                    filters.Regex(r"^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم)$"),
+                    handle_progress_response
+                ),
+            ],
+
+            # --- پنل ادمین ---
+            ADMIN_PANEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
+            ],
+
+            # --- ساخت برنامه درسی ---
             PLAN_DAY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_day)
             ],
@@ -1313,18 +1337,28 @@ def main():
             PLAN_SUBJECTS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_subjects)
             ],
+
+            # --- پیام همگانی ---
             BROADCAST_MESSAGE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_message)
-            ]
+            ],
         },
-        fallbacks=[CommandHandler('start', start)]
+        fallbacks=[CommandHandler('start', start)],
+        per_chat=True,
+        per_user=False
     )
-    
+
+    # اضافه کردن هندلرها
     application.add_handler(conv_handler)
     application.add_error_handler(error_handler)
-    
-    # اجرای ربات
-    logger.info("🤖 Bot is starting...")
-    application.run_polling()
+
+    # شروع ربات
+    logger.info("ربات در حال اجراست...")
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
+
+
+# --- حتماً این دو خط رو در آخر فایل داشته باشی ---
 if __name__ == '__main__':
     main()
