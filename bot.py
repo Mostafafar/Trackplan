@@ -1326,3 +1326,7 @@ def main():
     # اجرای ربات
     logger.info("🤖 Bot is starting...")
     application.run_polling()
+if __name__ == '__main__':
+    main()
+
+اشتباه دیگه: run_pololling → run_polling
