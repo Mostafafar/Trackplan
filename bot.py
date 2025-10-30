@@ -743,7 +743,8 @@ async def handle_subject_selection(update: Update, context: ContextTypes.DEFAULT
         if 'check_jobs' not in context.chat_data:
             context.chat_data['check_jobs'] = []
         
-        job = context.job_queue.run_repeating(
+        # استفاده از application job queue
+        job = context.application.job_queue.run_repeating(
             progress_check,
             interval=1200,  # 20 دقیقه
             first=1200,
@@ -1280,12 +1281,15 @@ def main():
     """تابع اصلی اجرای ربات"""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # اضافه کردن job_queue به application
+    job_queue = application.job_queue
+    
     # Conversation Handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
             ],
             STUDENT_PANEL: [
                 MessageHandler(filters.Regex(r"^(✅ پایان مطالعه|🔄 تغییر درس|📊 بازگشت به پنل|📊 گزارش روزانه|🎯 شروع مطالعه جدید|🔙 بازگشت)$"), handle_student_panel),
@@ -1322,6 +1326,3 @@ def main():
     # اجرای ربات
     logger.info("🤖 Bot is starting...")
     application.run_polling()
-
-if __name__ == '__main__':
-    main()
