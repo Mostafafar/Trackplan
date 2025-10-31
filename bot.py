@@ -1236,7 +1236,7 @@ async def handle_progress_check_response(update: Update, context: ContextTypes.D
             conn.close()
 
 async def show_student_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش گزارش دانش‌آموز"""
+    """نمایش گزارش دانش‌آموز با تاریخچه چک‌ها"""
     student = get_student(update.effective_user.id)
     if not student:
         await update.message.reply_text(
@@ -1264,13 +1264,24 @@ async def show_student_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         total_duration += duration
         
         status_emoji = "✅" if session['status'] == 'completed' else "🔄"
+        start_time = session['start_time'].astimezone(IRAN_TZ).strftime("%H:%M")
         
         report_text += (
             f"{status_emoji} {session['subject_name']}\n"
+            f"🕐 شروع: {start_time}\n"
             f"⏱️ مدت: {int(duration)} دقیقه\n"
             f"🔢 چک‌ها: {session['check_count']}\n"
-            f"────────────────────\n"
         )
+        
+        # نمایش تاریخچه چک‌ها
+        if session['checks']:
+            report_text += "📋 تاریخچه پاسخ‌ها:\n"
+            for i, check in enumerate(session['checks'], 1):
+                check_time = check['check_time'].astimezone(IRAN_TZ).strftime("%H:%M")
+                response = check.get('student_response', 'بدون پاسخ')
+                report_text += f"  {i}. {check_time}: {response}\n"
+        
+        report_text += "────────────────────\n"
     
     report_text += f"\n📈 مجموع مطالعه: {int(total_duration)} دقیقه"
     
@@ -1278,7 +1289,6 @@ async def show_student_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         report_text,
         reply_markup=get_student_panel_keyboard()
     )
-
 async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت پنل ادمین"""
     text = update.message.text
