@@ -921,13 +921,14 @@ async def handle_subject_selection(update: Update, context: ContextTypes.DEFAULT
     if text.startswith("📚 "):
         subject_name = text.replace("📚 ", "")
         
-        # پایان دادن به جلسه فعال قبلی (اگر وجود دارد)
-        active_session = get_student_active_session(user_data['student_id'])
-        if active_session:
-            end_study_session(active_session['id'])
+        # پایان دادن به تمام جلسات فعال قبلی این دانش‌آموز
+        student_id = user_data['student_id']
+        active_sessions = get_all_active_sessions_by_student(student_id)
+        for session in active_sessions:
+            end_study_session(session['id'])
             # حذف job چک‌های ۲۰ دقیقه‌ای قبلی
             if 'check_jobs' in context.chat_data:
-                current_jobs = [job for job in context.chat_data['check_jobs'] if job.name == f"check_{active_session['id']}"]
+                current_jobs = [job for job in context.chat_data['check_jobs'] if job.name == f"check_{session['id']}"]
                 for job in current_jobs:
                     job.schedule_removal()
         
@@ -989,6 +990,19 @@ async def handle_subject_selection(update: Update, context: ContextTypes.DEFAULT
         "لطفاً یکی از دروس را انتخاب کنید:",
         reply_markup=get_subjects_keyboard(day_number, grade, advisor_id)
     )
+
+def get_all_active_sessions_by_student(student_id: int):
+    """دریافت تمام جلسات فعال یک دانش‌آموز"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT * FROM study_sessions 
+            WHERE student_id = %s AND status = 'in_progress'
+            ORDER BY start_time DESC
+        """, (student_id,))
+        result = cursor.fetchall()
+    conn.close()
+    return result
 
 async def progress_check(context: ContextTypes.DEFAULT_TYPE):
     """بررسی وضعیت مطالعه هر ۲۰ دقیقه"""
@@ -1336,59 +1350,78 @@ async def show_all_students_admin(update: Update, context: ContextTypes.DEFAULT_
     )
 
 async def show_overall_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش گزارش کلی"""
+    """نمایش گزارش کلی مطالعه هر کاربر"""
     today = datetime.now(IRAN_TZ).day
     activities = get_all_students_daily_activity(today)
     
     if not activities:
         await update.message.reply_text(
-            "📊 امروز هیچ فعالیتی ثبت نشده است.",
+            f"📊 امروز ({today}) هیچ فعالیتی ثبت نشده است.",
             reply_markup=get_admin_panel_keyboard()
         )
         return
     
-    report_text = f"📊 گزارش کلی فعالیت امروز ({today})\n\n"
-    
-    current_student = None
-    student_sessions = []
-    
+    # گروه‌بندی فعالیت‌ها بر اساس دانش‌آموز
+    student_activities = {}
     for activity in activities:
-        if activity['full_name'] != current_student:
-            if current_student and student_sessions:
-                # محاسبه مجموع برای دانش‌آموز قبلی
-                total_duration = sum(session['total_duration'] or 0 for session in student_sessions)
-                completed_count = sum(1 for session in student_sessions if session['status'] == 'completed')
-                
-                report_text += (
-                    f"🎓 {current_student}\n"
-                    f"📚 پایه: {student_sessions[0]['grade']}\n"
-                    f"✅ جلسات تکمیل شده: {completed_count}\n"
-                    f"⏱️ مجموع مطالعه: {int(total_duration)} دقیقه\n"
-                    f"────────────────────\n"
-                )
-            
-            current_student = activity['full_name']
-            student_sessions = []
+        if activity['full_name'] not in student_activities:
+            student_activities[activity['full_name']] = {
+                'grade': activity['grade'],
+                'sessions': []
+            }
         
         if activity['subject_name']:  # اگر جلسه‌ای وجود دارد
-            student_sessions.append(activity)
+            student_activities[activity['full_name']]['sessions'].append(activity)
     
-    # اضافه کردن آخرین دانش‌آموز
-    if current_student and student_sessions:
-        total_duration = sum(session['total_duration'] or 0 for session in student_sessions)
-        completed_count = sum(1 for session in student_sessions if session['status'] == 'completed')
+    report_text = f"📊 گزارش کلی مطالعه امروز ({today})\n\n"
+    
+    for student_name, data in student_activities.items():
+        total_duration = sum(session['total_duration'] or 0 for session in data['sessions'])
+        completed_sessions = sum(1 for session in data['sessions'] if session['status'] == 'completed')
+        in_progress_sessions = sum(1 for session in data['sessions'] if session['status'] == 'in_progress')
         
-        report_text += (
-            f"🎓 {current_student}\n"
-            f"📚 پایه: {student_sessions[0]['grade']}\n"
-            f"✅ جلسات تکمیل شده: {completed_count}\n"
-            f"⏱️ مجموع مطالعه: {int(total_duration)} دقیقه\n"
-        )
+        report_text += f"🎓 {student_name}\n"
+        report_text += f"📚 پایه: {data['grade']}\n"
+        report_text += f"⏱️ مجموع مطالعه: {int(total_duration)} دقیقه\n"
+        report_text += f"✅ جلسات تکمیل شده: {completed_sessions}\n"
+        report_text += f"🔄 جلسات فعال: {in_progress_sessions}\n"
+        
+        # نمایش جزئیات هر جلسه
+        if data['sessions']:
+            report_text += "📖 جزئیات دروس:\n"
+            for session in data['sessions']:
+                status_emoji = "✅" if session['status'] == 'completed' else "🔄"
+                duration = session['total_duration'] or 0
+                report_text += f"  {status_emoji} {session['subject_name']} - {int(duration)} دقیقه\n"
+        
+        report_text += "────────────────────\n"
     
-    await update.message.reply_text(
-        report_text,
-        reply_markup=get_admin_panel_keyboard()
-    )
+    # اگر متن گزارش خیلی طولانی شد، آن را تقسیم کنیم
+    if len(report_text) > 4000:
+        parts = []
+        current_part = ""
+        lines = report_text.split('\n')
+        
+        for line in lines:
+            if len(current_part + line + '\n') > 4000:
+                parts.append(current_part)
+                current_part = line + '\n'
+            else:
+                current_part += line + '\n'
+        
+        if current_part:
+            parts.append(current_part)
+        
+        for i, part in enumerate(parts):
+            if i == 0:
+                await update.message.reply_text(part, reply_markup=get_admin_panel_keyboard())
+            else:
+                await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(
+            report_text,
+            reply_markup=get_admin_panel_keyboard()
+        )
 
 async def show_active_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش جلسات فعال"""
