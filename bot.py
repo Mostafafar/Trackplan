@@ -103,17 +103,27 @@ def init_database():
         """)
         
         # جدول تاریخچه ویرایش برنامه‌ها
+        # --- جدول تاریخچه ویرایش برنامه‌ها ---
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS plan_edit_history (
                 id SERIAL PRIMARY KEY,
-                plan_id INTEGER REFERENCES study_plans(id),
+                plan_id INTEGER REFERENCES study_plans(id) ON DELETE CASCADE,
                 edited_by INTEGER REFERENCES advisors(id),
                 old_data JSONB,
                 new_data JSONB,
                 edit_time TIMESTAMP DEFAULT NOW()
-            )
-        """)
+          )
+      """)
         
+       try:
+          cursor.execute("ALTER TABLE plan_edit_history DROP CONSTRAINT IF EXISTS plan_edit_history_plan_id_fkey")
+          cursor.execute("""
+              ALTER TABLE plan_edit_history 
+              ADD CONSTRAINT plan_edit_history_plan_id_fkey 
+              FOREIGN KEY (plan_id) REFERENCES study_plans(id) ON DELETE CASCADE
+          """)
+      except Exception as e:
+          logger.warning(f"Foreign key update skipped: {e}") 
         # جدول جلسات مطالعه
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS study_sessions (
