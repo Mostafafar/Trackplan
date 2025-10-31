@@ -2449,8 +2449,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_advisor)
             ],
             EDIT_PLANS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plans),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_selection_for_edit)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plans)
             ],
             EDIT_PLAN_DETAIL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_actions)
@@ -2459,9 +2458,18 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plan_subjects)
             ]
         },
-        fallbacks=[CommandHandler('start', start)],
+        fallbacks=[
+            CommandHandler('start', start),
+            MessageHandler(filters.TEXT, handle_unknown_message)
+        ],
         allow_reentry=True
     )
+    
+    # اضافه کردن handler برای انتخاب برنامه در حالت ویرایش
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Regex(r'^\d+$'), 
+        handle_plan_selection_for_edit
+    ), group=1)
     
     application.add_handler(conv_handler)
     application.add_error_handler(error_handler)
