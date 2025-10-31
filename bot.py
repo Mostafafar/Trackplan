@@ -83,6 +83,7 @@ def init_database():
             CREATE TABLE IF NOT EXISTS study_plans (
                 id SERIAL PRIMARY KEY,
                 day_number INTEGER NOT NULL,
+                day_description VARCHAR(255),
                 grade VARCHAR(50) NOT NULL,
                 subjects JSONB NOT NULL,
                 created_by INTEGER,
@@ -103,6 +104,18 @@ def init_database():
                 status VARCHAR(50) DEFAULT 'in_progress',
                 check_count INTEGER DEFAULT 0,
                 last_check_time TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        # جدول چک‌های وضعیت مطالعه
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS progress_checks (
+                id SERIAL PRIMARY KEY,
+                session_id INTEGER REFERENCES study_sessions(id),
+                check_time TIMESTAMP NOT NULL,
+                student_response VARCHAR(255),
+                response_time TIMESTAMP,
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
@@ -220,14 +233,14 @@ def is_admin(telegram_id: int):
 
 # --- توابع مدیریت برنامه‌های درسی ---
 
-def create_study_plan(day_number: int, grade: str, subjects: List[Dict], created_by: int):
+def create_study_plan(day_number: int, day_description: str, grade: str, subjects: List[Dict], created_by: int):
     """ایجاد برنامه درسی"""
     conn = get_db_connection()
     with conn.cursor() as cursor:
         cursor.execute("""
-            INSERT INTO study_plans (day_number, grade, subjects, created_by)
-            VALUES (%s, %s, %s, %s)
-        """, (day_number, grade, json.dumps(subjects), created_by))
+            INSERT INTO study_plans (day_number, day_description, grade, subjects, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (day_number, day_description, grade, json.dumps(subjects), created_by))
         conn.commit()
     conn.close()
     return True
@@ -404,9 +417,10 @@ def get_active_sessions():
     conn = get_db_connection()
     with conn.cursor() as cursor:
         cursor.execute("""
-            SELECT s.full_name, ss.subject_name, ss.start_time, ss.check_count, ss.id
+            SELECT s.full_name, ss.subject_name, ss.start_time, ss.check_count, ss.id, ss.student_id, sp.created_by as advisor_id
             FROM study_sessions ss
             JOIN students s ON ss.student_id = s.id
+            LEFT JOIN study_plans sp ON ss.day_number = sp.day_number AND s.grade = sp.grade
             WHERE ss.status = 'in_progress'
             ORDER BY ss.start_time
         """)
@@ -423,6 +437,15 @@ def get_student_active_session(student_id: int):
             WHERE student_id = %s AND status = 'in_progress'
             ORDER BY start_time DESC LIMIT 1
         """, (student_id,))
+        result = cursor.fetchone()
+    conn.close()
+    return result
+
+def get_advisor_by_id(advisor_id: int):
+    """دریافت اطلاعات مشاور با آیدی"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT * FROM advisors WHERE id = %s", (advisor_id,))
         result = cursor.fetchone()
     conn.close()
     return result
@@ -525,7 +548,7 @@ def get_progress_check_keyboard():
     keyboard = [
         ["✅ در حال پیشرفت"],
         ["⚠️ مشکل دارم"],
-        ["❌ متوقف کردم"]
+        ["❌ متوقف کردم", "⏹️ اتمام مطالعه"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
@@ -540,7 +563,7 @@ def get_plan_grade_keyboard():
 def get_plan_subjects_keyboard():
     """مدیریت دروس برنامه"""
     keyboard = [
-        ["پایان"],
+        ["✅ پایان"],
         ["🔙 بازگشت"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -588,7 +611,10 @@ def get_days_keyboard(grade: str, advisor_id: int):
     
     keyboard = []
     for plan in plans:
-        keyboard.append([f"📅 روز {plan['day_number']}"])
+        day_text = f"📅 روز {plan['day_number']}"
+        if plan.get('day_description'):
+            day_text += f" ({plan['day_description']})"
+        keyboard.append([day_text])
     
     keyboard.append(["🔙 بازگشت"])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -682,8 +708,12 @@ async def show_all_study_plans_to_student(update: Update, context: ContextTypes.
     plans_text = "📚 برنامه‌های درسی موجود:\n\n"
     
     for plan in plans:
+        day_text = f"روز {plan['day_number']}"
+        if plan.get('day_description'):
+            day_text += f" ({plan['day_description']})"
+            
         plans_text += (
-            f"📘 روز {plan['day_number']} - {plan['grade']}\n"
+            f"📘 {day_text} - {plan['grade']}\n"
             f"👤 مشاور: {plan['creator_name']}\n"
             f"📚 دروس: {', '.join([s['name'] for s in plan['subjects']])}\n"
             f"────────────────────\n"
@@ -801,26 +831,6 @@ async def handle_advisor_selection(update: Update, context: ContextTypes.DEFAULT
         reply_markup=get_advisors_keyboard(grade)
     )
 
-# --- تغییرات در تابع get_advisors_keyboard ---
-
-def get_advisors_keyboard(grade: str):
-    """ایجاد دکمه‌های مشاوران برای یک پایه"""
-    advisors = get_advisors_with_plans_for_grade(grade)
-    
-    # اگر هیچ مشاوری برای این پایه برنامه ندارد، تمام مشاوران را نشان بده
-    if not advisors:
-        advisors = get_all_advisors_for_selection()
-    
-    if not advisors:
-        return None
-    
-    keyboard = []
-    for advisor in advisors:
-        keyboard.append([f"👤 {advisor['full_name']}"])
-    
-    keyboard.append(["🔙 بازگشت"])
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
 async def handle_day_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب روز"""
     text = update.message.text
@@ -837,7 +847,9 @@ async def handle_day_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if text.startswith("📅 روز "):
         try:
-            day_number = int(text.replace("📅 روز ", ""))
+            # استخراج شماره روز از متن
+            day_text = text.replace("📅 روز ", "")
+            day_number = int(day_text.split()[0])  # فقط عدد اول را بگیر
             user_data['selected_day'] = day_number
             
             # نمایش دروس این روز
@@ -849,8 +861,13 @@ async def handle_day_selection(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
                 return SELECT_DAY
             
+            plan = get_study_plan(day_number, grade, advisor_id)
+            day_info = f"روز {day_number}"
+            if plan and plan.get('day_description'):
+                day_info += f" ({plan['day_description']})"
+            
             await update.message.reply_text(
-                f"📘 برنامه روز {day_number} - {grade}\n"
+                f"📘 برنامه {day_info} - {grade}\n"
                 f"👤 مشاور: {user_data.get('advisor_name')}\n\n"
                 f"📚 لطفاً درس مورد نظر را انتخاب کنید:",
                 reply_markup=subjects_keyboard
@@ -907,9 +924,14 @@ async def handle_subject_selection(update: Update, context: ContextTypes.DEFAULT
         user_data['current_subject'] = subject_name
         start_time = datetime.now(IRAN_TZ).strftime("%H:%M")
         
+        plan = get_study_plan(day_number, grade, advisor_id)
+        day_info = f"روز {day_number}"
+        if plan and plan.get('day_description'):
+            day_info += f" ({plan['day_description']})"
+        
         await update.message.reply_text(
             f"🎯 مطالعه '{subject_name}' شروع شد!\n"
-            f"📅 روز: {day_number}\n"
+            f"📅 {day_info}\n"
             f"👤 مشاور: {user_data.get('advisor_name')}\n"
             f"🕐 زمان شروع: {start_time}\n"
             f"⏰ هر ۲۰ دقیقه وضعیت شما چک می‌شود...\n\n"
@@ -933,6 +955,16 @@ async def handle_subject_selection(update: Update, context: ContextTypes.DEFAULT
         )
         context.chat_data['check_jobs'].append(job)
         
+        # برنامه‌ریزی برای پایان خودکار بعد از 120 دقیقه
+        auto_end_job = context.application.job_queue.run_once(
+            auto_end_session,
+            7200,  # 120 دقیقه
+            chat_id=update.message.chat_id,
+            name=f"auto_end_{session_id}",
+            data=session_id
+        )
+        context.chat_data['check_jobs'].append(auto_end_job)
+        
         return STUDENT_PANEL
     
     await update.message.reply_text(
@@ -940,47 +972,103 @@ async def handle_subject_selection(update: Update, context: ContextTypes.DEFAULT
         reply_markup=get_subjects_keyboard(day_number, grade, advisor_id)
     )
 
-async def handle_student_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مدیریت پنل دانش‌آموز"""
+async def progress_check(context: ContextTypes.DEFAULT_TYPE):
+    """بررسی وضعیت مطالعه هر ۲۰ دقیقه"""
+    job = context.job
+    session_id = job.data
+    
+    # به‌روزرسانی زمان آخرین بررسی
+    update_check_time(session_id)
+    
+    # ارسال پیام بررسی وضعیت
+    await context.bot.send_message(
+        chat_id=job.chat_id,
+        text="🔄 وضعیت مطالعه شما چگونه است؟",
+        reply_markup=get_progress_check_keyboard()
+    )
+
+async def auto_end_session(context: ContextTypes.DEFAULT_TYPE):
+    """پایان خودکار جلسه مطالعه بعد از 120 دقیقه"""
+    job = context.job
+    session_id = job.data
+    
+    # پایان دادن به جلسه
+    result = end_study_session(session_id)
+    
+    if result:
+        await context.bot.send_message(
+            chat_id=job.chat_id,
+            text=f"⏰ زمان مطالعه به پایان رسید!\n\n"
+                 f"📚 درس: {result['subject_name']}\n"
+                 f"⏱️ مدت زمان: {int(result['total_duration'])} دقیقه\n"
+                 f"✅ جلسه مطالعه به صورت خودکار پایان یافت.",
+            reply_markup=get_student_panel_keyboard()
+        )
+        
+        # حذف job چک‌های ۲۰ دقیقه‌ای
+        if 'check_jobs' in context.chat_data:
+            current_jobs = [j for j in context.chat_data['check_jobs'] if j.name.startswith(f"check_{session_id}")]
+            for j in current_jobs:
+                j.schedule_removal()
+
+async def handle_study_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت جلسه مطالعه"""
     text = update.message.text
     user_data = context.user_data
-    grade = user_data.get('grade')
-    advisor_id = user_data.get('advisor_id')
     
-    if text == "🔙 بازگشت":
-        await update.message.reply_text(
-            "منوی اصلی:",
-            reply_markup=get_main_menu_keyboard()
-        )
-        return GRADE_SELECTION
-    
-    elif text == "🎯 شروع مطالعه جدید":
-        # بازگشت به انتخاب روز
-        days_keyboard = get_days_keyboard(grade, advisor_id)
-        if days_keyboard:
-            await update.message.reply_text(
-                "📅 لطفاً روز مورد نظر را انتخاب کنید:",
-                reply_markup=days_keyboard
-            )
-            return SELECT_DAY
+    if text == "✅ پایان مطالعه":
+        if 'current_session' in user_data:
+            session_id = user_data['current_session']
+            result = end_study_session(session_id)
+            
+            if result:
+                # حذف job چک‌های ۲۰ دقیقه‌ای
+                if 'check_jobs' in context.chat_data:
+                    current_jobs = [job for job in context.chat_data['check_jobs'] if job.name.startswith(f"check_{session_id}")]
+                    for job in current_jobs:
+                        job.schedule_removal()
+                
+                await update.message.reply_text(
+                    f"✅ مطالعه '{user_data['current_subject']}' با موفقیت پایان یافت!\n\n"
+                    f"⏱️ مدت زمان: {int(result['total_duration'])} دقیقه\n"
+                    f"📊 تعداد چک‌ها: {result.get('check_count', 0)}",
+                    reply_markup=get_student_panel_keyboard()
+                )
+                
+                # حذف اطلاعات جلسه
+                del user_data['current_session']
+                del user_data['current_subject']
+            else:
+                await update.message.reply_text(
+                    "❌ خطا در پایان دادن به جلسه مطالعه.",
+                    reply_markup=get_student_panel_keyboard()
+                )
         else:
             await update.message.reply_text(
-                "❌ هیچ برنامه‌ای برای پایه شما موجود نیست.",
+                "❌ جلسه مطالعه فعالی ندارید.",
                 reply_markup=get_student_panel_keyboard()
             )
     
     elif text == "🔄 تغییر درس":
-        # پایان جلسه فعلی و بازگشت به انتخاب درس
-        session_id = user_data.get('current_session')
-        if session_id:
+        # پایان دادن به جلسه فعلی
+        if 'current_session' in user_data:
+            session_id = user_data['current_session']
             end_study_session(session_id)
+            
             # حذف job چک‌های ۲۰ دقیقه‌ای
             if 'check_jobs' in context.chat_data:
-                current_jobs = [job for job in context.chat_data['check_jobs'] if job.name == f"check_{session_id}"]
+                current_jobs = [job for job in context.chat_data['check_jobs'] if job.name.startswith(f"check_{session_id}")]
                 for job in current_jobs:
                     job.schedule_removal()
+            
+            del user_data['current_session']
+            del user_data['current_subject']
         
+        # بازگشت به انتخاب درس
+        grade = user_data.get('grade')
+        advisor_id = user_data.get('advisor_id')
         day_number = user_data.get('selected_day')
+        
         subjects_keyboard = get_subjects_keyboard(day_number, grade, advisor_id)
         if subjects_keyboard:
             await update.message.reply_text(
@@ -990,36 +1078,9 @@ async def handle_student_panel(update: Update, context: ContextTypes.DEFAULT_TYP
             return SELECT_SUBJECT
         else:
             await update.message.reply_text(
-                "❌ هیچ درسی برای این روز موجود نیست.",
+                "❌ درسی برای انتخاب موجود نیست.",
                 reply_markup=get_student_panel_keyboard()
             )
-    
-    elif text == "✅ پایان مطالعه":
-        session_id = user_data.get('current_session')
-        if session_id:
-            result = end_study_session(session_id)
-            # حذف job چک‌های ۲۰ دقیقه‌ای
-            if 'check_jobs' in context.chat_data:
-                current_jobs = [job for job in context.chat_data['check_jobs'] if job.name == f"check_{session_id}"]
-                for job in current_jobs:
-                    job.schedule_removal()
-            
-            if result:
-                duration = int(result['total_duration']) if result['total_duration'] else 0
-                await update.message.reply_text(
-                    f"✅ مطالعه '{result['subject_name']}' با موفقیت به پایان رسید!\n"
-                    f"⏱️ مدت مطالعه: {duration} دقیقه\n\n"
-                    f"📊 برای مشاهده گزارش به پنل مراجعه کنید.",
-                    reply_markup=get_student_panel_keyboard()
-                )
-        else:
-            await update.message.reply_text(
-                "❌ جلسه مطالعه فعالی ندارید.",
-                reply_markup=get_student_panel_keyboard()
-            )
-    
-    elif text == "📊 گزارش روزانه":
-        await show_student_report(update, context)
     
     elif text == "📊 بازگشت به پنل":
         await update.message.reply_text(
@@ -1030,8 +1091,75 @@ async def handle_student_panel(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         await update.message.reply_text(
             "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
-            reply_markup=get_student_panel_keyboard()
+            reply_markup=get_study_management_keyboard()
         )
+
+async def handle_progress_check_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پاسخ به بررسی وضعیت مطالعه"""
+    text = update.message.text
+    user_data = context.user_data
+    
+    if text == "⏹️ اتمام مطالعه":
+        # پایان جلسه مطالعه
+        if 'current_session' in user_data:
+            session_id = user_data['current_session']
+            result = end_study_session(session_id)
+            
+            if result:
+                # حذف job چک‌های ۲۰ دقیقه‌ای
+                if 'check_jobs' in context.chat_data:
+                    current_jobs = [job for job in context.chat_data['check_jobs'] if job.name.startswith(f"check_{session_id}")]
+                    for job in current_jobs:
+                        job.schedule_removal()
+                
+                await update.message.reply_text(
+                    f"✅ مطالعه '{user_data['current_subject']}' با موفقیت پایان یافت!\n\n"
+                    f"⏱️ مدت زمان: {int(result['total_duration'])} دقیقه\n"
+                    f"📊 تعداد چک‌ها: {result.get('check_count', 0)}",
+                    reply_markup=get_student_panel_keyboard()
+                )
+                
+                # حذف اطلاعات جلسه
+                del user_data['current_session']
+                del user_data['current_subject']
+            else:
+                await update.message.reply_text(
+                    "❌ خطا در پایان دادن به جلسه مطالعه.",
+                    reply_markup=get_student_panel_keyboard()
+                )
+        else:
+            await update.message.reply_text(
+                "❌ جلسه مطالعه فعالی ندارید.",
+                reply_markup=get_student_panel_keyboard()
+            )
+        return STUDENT_PANEL
+    
+    else:
+        # ذخیره پاسخ و ادامه جلسه
+        response_text = ""
+        if text == "✅ در حال پیشرفت":
+            response_text = "عالی! ادامه بده 💪"
+        elif text == "⚠️ مشکل دارم":
+            response_text = "مشکلت چیه؟ می‌تونی ادامه بدی یا نیاز به کمک داری؟"
+        elif text == "❌ متوقف کردم":
+            response_text = "اشکال نداره! می‌تونی بعداً ادامه بدی."
+        
+        await update.message.reply_text(
+            response_text + "\n\nادامه بده...",
+            reply_markup=get_study_management_keyboard()
+        )
+        
+        # ثبت پاسخ در دیتابیس
+        if 'current_session' in user_data:
+            session_id = user_data['current_session']
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO progress_checks (session_id, check_time, student_response)
+                    VALUES (%s, %s, %s)
+                """, (session_id, datetime.now(IRAN_TZ), text))
+                conn.commit()
+            conn.close()
 
 async def show_student_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش گزارش دانش‌آموز"""
@@ -1043,43 +1171,39 @@ async def show_student_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
     
-    day_number = context.user_data.get('selected_day', 1)
-    report = get_daily_report(student['id'], day_number)
+    # دریافت گزارش روز جاری
+    today = datetime.now(IRAN_TZ).day
+    report = get_daily_report(student['id'], today)
     
     if not report:
         await update.message.reply_text(
-            f"📊 گزارش روز {day_number}:\n"
-            f"❌ هیچ فعالیتی ثبت نشده است.",
+            "📊 امروز هیچ مطالعه‌ای ثبت نشده است.",
             reply_markup=get_student_panel_keyboard()
         )
         return
     
-    total_time = sum(session['total_duration'] or 0 for session in report)
-    completed_subjects = sum(1 for session in report if session['status'] == 'completed')
-    
-    report_text = f"📊 گزارش روز {day_number} - {student['full_name']}\n\n"
+    report_text = f"📊 گزارش مطالعه امروز ({today})\n\n"
+    total_duration = 0
     
     for session in report:
-        start_time = session['start_time'].astimezone(IRAN_TZ).strftime("%H:%M")
-        end_time = session['end_time'].astimezone(IRAN_TZ).strftime("%H:%M") if session['end_time'] else "در حال مطالعه"
-        duration = session['total_duration'] or "نامشخص"
+        duration = session['total_duration'] or 0
+        total_duration += duration
+        
+        status_emoji = "✅" if session['status'] == 'completed' else "🔄"
         
         report_text += (
-            f"📚 {session['subject_name']}\n"
-            f"⏰ {start_time} - {end_time} ({duration} دقیقه)\n"
-            f"✅ وضعیت: {session['status']}\n"
-            f"🔍 تعداد چک‌ها: {session['check_count']}\n"
+            f"{status_emoji} {session['subject_name']}\n"
+            f"⏱️ مدت: {int(duration)} دقیقه\n"
+            f"🔢 چک‌ها: {session['check_count']}\n"
             f"────────────────────\n"
         )
     
-    report_text += f"\n📈 جمع‌بندی:\n⏱️ کل زمان مطالعه: {total_time} دقیقه\n✅ دروس تکمیل شده: {completed_subjects}"
+    report_text += f"\n📈 مجموع مطالعه: {int(total_duration)} دقیقه"
     
     await update.message.reply_text(
         report_text,
         reply_markup=get_student_panel_keyboard()
     )
-
-# --- Admin Handlers ---
 
 async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت پنل ادمین"""
@@ -1094,11 +1218,10 @@ async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     elif text == "➕ افزودن برنامه جدید":
         await update.message.reply_text(
-            "📝 افزودن برنامه جدید\n\n"
-            "لطفاً شماره روز را وارد کنید:",
-            reply_markup=get_back_keyboard()
+            "📝 برای ایجاد برنامه جدید، لطفاً پایه مورد نظر را انتخاب کنید:",
+            reply_markup=get_plan_grade_keyboard()
         )
-        return PLAN_DAY
+        return PLAN_GRADE
     
     elif text == "📝 مشاهده برنامه‌ها":
         await show_all_plans_admin(update, context)
@@ -1110,20 +1233,18 @@ async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await show_overall_report(update, context)
     
     elif text == "🔍 جلسات فعال":
-        await show_active_sessions_admin(update, context)
+        await show_active_sessions(update, context)
     
     elif text == "📢 ارسال پیام همگانی":
         await update.message.reply_text(
-            "📢 ارسال پیام همگانی\n\n"
-            "لطفاً پیام خود را وارد کنید:",
+            "📢 لطفاً پیام همگانی خود را ارسال کنید:",
             reply_markup=get_broadcast_keyboard()
         )
         return BROADCAST_MESSAGE
     
     elif text == "👨‍🏫 مدیریت مشاوران":
         await update.message.reply_text(
-            "👨‍🏫 مدیریت مشاوران\n\n"
-            "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
+            "👨‍🏫 مدیریت مشاوران:",
             reply_markup=get_advisors_management_keyboard()
         )
         return ADD_ADVISOR
@@ -1134,271 +1255,28 @@ async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=get_admin_panel_keyboard()
         )
 
-async def handle_advisors_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مدیریت مشاوران"""
-    text = update.message.text
-    
-    if text == "🔙 بازگشت":
-        await update.message.reply_text(
-            "پنل مدیریت:",
-            reply_markup=get_admin_panel_keyboard()
-        )
-        return ADMIN_PANEL
-    
-    elif text == "➕ افزودن مشاور جدید":
-        await update.message.reply_text(
-            "👨‍🏫 افزودن مشاور جدید\n\n"
-            "لطفاً اطلاعات مشاور را به این فرمت وارد کنید:\n"
-            "آیدی_تلگرام,نام_کامل\n\n"
-            "مثال:\n"
-            "123456789,احمد احمدی",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['awaiting_advisor_info'] = True
-        return ADD_ADVISOR
-    
-    elif text == "📋 لیست مشاوران":
-        advisors = get_all_advisors()
-        if not advisors:
-            await update.message.reply_text(
-                "❌ هیچ مشاوری ثبت نشده است.",
-                reply_markup=get_advisors_management_keyboard()
-            )
-            return ADD_ADVISOR
-        
-        advisors_text = "👨‍🏫 لیست مشاوران:\n\n"
-        for advisor in advisors:
-            role = "👑 مدیر" if advisor['is_admin'] else "👤 مشاور"
-            advisors_text += f"{role} - {advisor['full_name']}\n"
-            advisors_text += f"🆔 آیدی: {advisor['telegram_id']}\n"
-            advisors_text += f"📅 تاریخ ثبت: {advisor['created_at'].astimezone(IRAN_TZ).strftime('%Y-%m-%d %H:%M')}\n"
-            advisors_text += "────────────────────\n"
-        
-        await update.message.reply_text(
-            advisors_text,
-            reply_markup=get_advisors_management_keyboard()
-        )
-    
-    else:
-        # پردازش اطلاعات مشاور جدید
-        if context.user_data.get('awaiting_advisor_info'):
-            try:
-                parts = text.split(',')
-                if len(parts) != 2:
-                    raise ValueError
-                
-                telegram_id = int(parts[0].strip())
-                full_name = parts[1].strip()
-                
-                # ثبت مشاور جدید
-                advisor_id = register_advisor(telegram_id, full_name, False)
-                
-                if advisor_id:
-                    await update.message.reply_text(
-                        f"✅ مشاور جدید با موفقیت ثبت شد!\n\n"
-                        f"👤 نام: {full_name}\n"
-                        f"🆔 آیدی: {telegram_id}",
-                        reply_markup=get_advisors_management_keyboard()
-                    )
-                else:
-                    await update.message.reply_text(
-                        "❌ خطا در ثبت مشاور.",
-                        reply_markup=get_advisors_management_keyboard()
-                    )
-                
-                context.user_data.pop('awaiting_advisor_info', None)
-                
-            except (ValueError, IndexError):
-                await update.message.reply_text(
-                    "❌ فرمت اطلاعات صحیح نیست.\n"
-                    "لطفاً به این فرمت وارد کنید:\n"
-                    "آیدی_تلگرام,نام_کامل\n\n"
-                    "مثال:\n"
-                    "123456789,احمد احمدی",
-                    reply_markup=get_back_keyboard()
-                )
-            except Exception as e:
-                await update.message.reply_text(
-                    f"❌ خطا در ثبت مشاور: {e}",
-                    reply_markup=get_advisors_management_keyboard()
-                )
-                context.user_data.pop('awaiting_advisor_info', None)
-
-async def handle_plan_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دریافت شماره روز برای برنامه جدید"""
-    text = update.message.text
-    
-    if text == "🔙 بازگشت":
-        await update.message.reply_text(
-            "پنل مدیریت:",
-            reply_markup=get_admin_panel_keyboard()
-        )
-        return ADMIN_PANEL
-    
-    try:
-        day_number = int(text)
-        if day_number <= 0:
-            raise ValueError
-        
-        context.user_data['plan_day'] = day_number
-        await update.message.reply_text(
-            f"📘 روز {day_number} انتخاب شد.\n\n"
-            f"لطفاً پایه تحصیلی را انتخاب کنید:",
-            reply_markup=get_plan_grade_keyboard()
-        )
-        return PLAN_GRADE
-        
-    except ValueError:
-        await update.message.reply_text(
-            "❌ شماره روز باید یک عدد صحیح مثبت باشد.\n"
-            "لطفاً مجدداً وارد کنید:",
-            reply_markup=get_back_keyboard()
-        )
-
-async def handle_plan_grade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دریافت پایه تحصیلی برای برنامه جدید"""
-    text = update.message.text
-    
-    if text == "🔙 بازگشت":
-        await update.message.reply_text(
-            "لطفاً شماره روز را وارد کنید:",
-            reply_markup=get_back_keyboard()
-        )
-        return PLAN_DAY
-    
-    if text in ["🎓 دوازدهم تجربی", "📊 دوازدهم ریاضی"]:
-        grade = "دوازدهم تجربی" if "تجربی" in text else "دوازدهم ریاضی"
-        context.user_data['plan_grade'] = grade
-        context.user_data['plan_subjects'] = []
-        
-        await update.message.reply_text(
-            f"📘 پایه {grade} انتخاب شد.\n\n"
-            f"لطفاً نام درس اول را وارد کنید:",
-            reply_markup=get_plan_subjects_keyboard()
-        )
-        return PLAN_SUBJECTS
-    
-    await update.message.reply_text(
-        "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
-        reply_markup=get_plan_grade_keyboard()
-    )
-
-async def handle_plan_subjects(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دریافت دروس برنامه"""
-    text = update.message.text
-    user_data = context.user_data
-    
-    if text == "🔙 بازگشت":
-        await update.message.reply_text(
-            "لطفاً پایه تحصیلی را انتخاب کنید:",
-            reply_markup=get_plan_grade_keyboard()
-        )
-        return PLAN_GRADE
-    
-    if text == "پایان":
-        if not user_data['plan_subjects']:
-            await update.message.reply_text(
-                "❌ حداقل یک درس باید اضافه کنید.\n"
-                "لطفاً نام درس را وارد کنید:",
-                reply_markup=get_plan_subjects_keyboard()
-            )
-            return PLAN_SUBJECTS
-        
-        # ذخیره برنامه در دیتابیس
-        advisor = get_advisor(update.effective_user.id)
-        if not advisor:
-            await update.message.reply_text(
-                "❌ شما به عنوان مشاور ثبت‌نام نکرده‌اید.",
-                reply_markup=get_admin_panel_keyboard()
-            )
-            return ADMIN_PANEL
-        
-        create_study_plan(
-            day_number=user_data['plan_day'],
-            grade=user_data['plan_grade'],
-            subjects=user_data['plan_subjects'],
-            created_by=advisor['id']
-        )
-        
-        subjects_list = "\n".join([f"📚 {s['name']}" for s in user_data['plan_subjects']])
-        
-        await update.message.reply_text(
-            f"✅ برنامه درسی با موفقیت ذخیره شد!\n\n"
-            f"📘 روز {user_data['plan_day']} - {user_data['plan_grade']}\n"
-            f"📚 دروس:\n{subjects_list}",
-            reply_markup=get_admin_panel_keyboard()
-        )
-        return ADMIN_PANEL
-    
-    # اضافه کردن درس جدید
-    subject_name = text.strip()
-    if subject_name:
-        user_data['plan_subjects'].append({"name": subject_name})
-        
-        await update.message.reply_text(
-            f"✅ درس '{subject_name}' اضافه شد.\n\n"
-            f"برای اضافه کردن درس دیگر، نام آن را وارد کنید.\n"
-            f"برای پایان، دکمه 'پایان' را بزنید.",
-            reply_markup=get_plan_subjects_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            "❌ نام درس نمی‌تواند خالی باشد.\n"
-            "لطفاً مجدداً وارد کنید:",
-            reply_markup=get_plan_subjects_keyboard()
-        )
-
-async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مدیریت ارسال پیام همگانی"""
-    text = update.message.text
-    
-    if text == "🔙 بازگشت":
-        await update.message.reply_text(
-            "پنل مدیریت:",
-            reply_markup=get_admin_panel_keyboard()
-        )
-        return ADMIN_PANEL
-    
-    # ارسال پیام به تمام دانش‌آموزان
-    student_ids = get_all_students_telegram_ids()
-    success_count = 0
-    
-    for student_id in student_ids:
-        try:
-            await context.bot.send_message(
-                chat_id=student_id,
-                text=f"📢 پیام همگانی:\n\n{text}"
-            )
-            success_count += 1
-        except Exception as e:
-            logger.error(f"Failed to send message to {student_id}: {e}")
-    
-    await update.message.reply_text(
-        f"✅ پیام همگانی ارسال شد!\n"
-        f"📊 تعداد موفق: {success_count} از {len(student_ids)}",
-        reply_markup=get_admin_panel_keyboard()
-    )
-    return ADMIN_PANEL
-
 async def show_all_plans_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش تمام برنامه‌ها به ادمین"""
     plans = get_all_plans()
     
     if not plans:
         await update.message.reply_text(
-            "📝 در حال حاضر هیچ برنامه درسی موجود نیست.",
+            "📝 هیچ برنامه درسی موجود نیست.",
             reply_markup=get_admin_panel_keyboard()
         )
         return
     
-    plans_text = "📚 برنامه‌های درسی:\n\n"
+    plans_text = "📚 برنامه‌های درسی موجود:\n\n"
     
     for plan in plans:
+        day_text = f"روز {plan['day_number']}"
+        if plan.get('day_description'):
+            day_text += f" ({plan['day_description']})"
+            
         plans_text += (
-            f"📘 روز {plan['day_number']} - {plan['grade']}\n"
+            f"📘 {day_text} - {plan['grade']}\n"
             f"👤 مشاور: {plan['creator_name']}\n"
             f"📚 دروس: {', '.join([s['name'] for s in plan['subjects']])}\n"
-            f"📅 تاریخ ایجاد: {plan['created_at'].astimezone(IRAN_TZ).strftime('%Y-%m-%d %H:%M')}\n"
             f"────────────────────\n"
         )
     
@@ -1418,21 +1296,19 @@ async def show_all_students_admin(update: Update, context: ContextTypes.DEFAULT_
         )
         return
     
-    students_text = "👥 دانش‌آموزان ثبت‌نام شده:\n\n"
+    students_text = "👥 لیست دانش‌آموزان:\n\n"
     
     for student in students:
-        advisor_name = "نامشخص"
+        advisor_name = "تعیین نشده"
         if student['advisor_id']:
             advisor = get_advisor_by_id(student['advisor_id'])
             if advisor:
                 advisor_name = advisor['full_name']
         
         students_text += (
-            f"👤 {student['full_name']}\n"
-            f"🎓 {student['grade']}\n"
-            f"📞 آیدی: {student['telegram_id']}\n"
-            f"👨‍🏫 مشاور: {advisor_name}\n"
-            f"📅 تاریخ ثبت‌نام: {student['created_at'].astimezone(IRAN_TZ).strftime('%Y-%m-%d %H:%M')}\n"
+            f"🎓 {student['full_name']}\n"
+            f"📚 پایه: {student['grade']}\n"
+            f"👤 مشاور: {advisor_name}\n"
             f"────────────────────\n"
         )
     
@@ -1441,63 +1317,54 @@ async def show_all_students_admin(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=get_admin_panel_keyboard()
     )
 
-def get_advisor_by_id(advisor_id: int):
-    """دریافت اطلاعات مشاور با آیدی"""
-    conn = get_db_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("SELECT * FROM advisors WHERE id = %s", (advisor_id,))
-        result = cursor.fetchone()
-    conn.close()
-    return result
-
 async def show_overall_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش گزارش کلی"""
-    day_number = 1  # می‌تواند از ورودی دریافت شود
-    activities = get_all_students_daily_activity(day_number)
+    today = datetime.now(IRAN_TZ).day
+    activities = get_all_students_daily_activity(today)
     
     if not activities:
         await update.message.reply_text(
-            f"📊 گزارش روز {day_number}:\n"
-            f"❌ هیچ فعالیتی ثبت نشده است.",
+            "📊 امروز هیچ فعالیتی ثبت نشده است.",
             reply_markup=get_admin_panel_keyboard()
         )
         return
     
-    # محاسبه آمار کلی
-    total_students = len(set(activity['full_name'] for activity in activities if activity['subject_name']))
-    active_students = len(set(activity['full_name'] for activity in activities if activity['status'] == 'in_progress'))
-    total_study_time = sum(activity['total_duration'] or 0 for activity in activities)
+    report_text = f"📊 گزارش کلی فعالیت امروز ({today})\n\n"
     
-    report_text = f"📊 گزارش کلی روز {day_number}\n\n"
-    report_text += f"👥 کل دانش‌آموزان: {total_students}\n"
-    report_text += f"🎯 دانش‌آموزان فعال: {active_students}\n"
-    report_text += f"⏱️ کل زمان مطالعه: {total_study_time} دقیقه\n\n"
+    current_student = None
+    student_sessions = []
     
-    # فعالیت‌های هر دانش‌آموز
-    student_activities = {}
     for activity in activities:
-        if activity['full_name'] not in student_activities:
-            student_activities[activity['full_name']] = {
-                'grade': activity['grade'],
-                'subjects': []
-            }
+        if activity['full_name'] != current_student:
+            if current_student and student_sessions:
+                # محاسبه مجموع برای دانش‌آموز قبلی
+                total_duration = sum(session['total_duration'] or 0 for session in student_sessions)
+                completed_count = sum(1 for session in student_sessions if session['status'] == 'completed')
+                
+                report_text += (
+                    f"🎓 {current_student}\n"
+                    f"📚 پایه: {student_sessions[0]['grade']}\n"
+                    f"✅ جلسات تکمیل شده: {completed_count}\n"
+                    f"⏱️ مجموع مطالعه: {int(total_duration)} دقیقه\n"
+                    f"────────────────────\n"
+                )
+            
+            current_student = activity['full_name']
+            student_sessions = []
         
-        if activity['subject_name']:
-            student_activities[activity['full_name']]['subjects'].append({
-                'subject': activity['subject_name'],
-                'duration': activity['total_duration'] or 0,
-                'status': activity['status'],
-                'checks': activity['check_count'] or 0
-            })
+        if activity['subject_name']:  # اگر جلسه‌ای وجود دارد
+            student_sessions.append(activity)
     
-    for student_name, data in student_activities.items():
-        total_time = sum(subject['duration'] for subject in data['subjects'])
-        completed = sum(1 for subject in data['subjects'] if subject['status'] == 'completed')
+    # اضافه کردن آخرین دانش‌آموز
+    if current_student and student_sessions:
+        total_duration = sum(session['total_duration'] or 0 for session in student_sessions)
+        completed_count = sum(1 for session in student_sessions if session['status'] == 'completed')
         
         report_text += (
-            f"👤 {student_name} ({data['grade']})\n"
-            f"⏱️ {total_time} دقیقه - ✅ {completed} درس\n"
-            f"────────────────────\n"
+            f"🎓 {current_student}\n"
+            f"📚 پایه: {student_sessions[0]['grade']}\n"
+            f"✅ جلسات تکمیل شده: {completed_count}\n"
+            f"⏱️ مجموع مطالعه: {int(total_duration)} دقیقه\n"
         )
     
     await update.message.reply_text(
@@ -1505,8 +1372,8 @@ async def show_overall_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=get_admin_panel_keyboard()
     )
 
-async def show_active_sessions_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش جلسات فعال به ادمین"""
+async def show_active_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش جلسات فعال"""
     active_sessions = get_active_sessions()
     
     if not active_sessions:
@@ -1520,13 +1387,14 @@ async def show_active_sessions_admin(update: Update, context: ContextTypes.DEFAU
     
     for session in active_sessions:
         start_time = session['start_time'].astimezone(IRAN_TZ).strftime("%H:%M")
-        duration = int((datetime.now(IRAN_TZ) - session['start_time'].astimezone(IRAN_TZ)).total_seconds() / 60)
+        duration = (datetime.now(IRAN_TZ) - session['start_time'].astimezone(IRAN_TZ)).total_seconds() / 60
         
         sessions_text += (
-            f"👤 {session['full_name']}\n"
-            f"📚 {session['subject_name']}\n"
-            f"🕐 شروع: {start_time} ({duration} دقیقه گذشته)\n"
-            f"🔍 چک‌ها: {session['check_count']}\n"
+            f"🎓 {session['full_name']}\n"
+            f"📚 درس: {session['subject_name']}\n"
+            f"🕐 شروع: {start_time}\n"
+            f"⏱️ مدت: {int(duration)} دقیقه\n"
+            f"🔢 چک‌ها: {session['check_count']}\n"
             f"────────────────────\n"
         )
     
@@ -1535,104 +1403,290 @@ async def show_active_sessions_admin(update: Update, context: ContextTypes.DEFAU
         reply_markup=get_admin_panel_keyboard()
     )
 
-async def progress_check(context: ContextTypes.DEFAULT_TYPE):
-    """بررسی ۲۰ دقیقه‌ای پیشرفت مطالعه"""
-    job = context.job
-    session_id = job.data
-    
-    # دریافت اطلاعات جلسه
-    conn = get_db_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            SELECT ss.*, s.telegram_id, s.full_name
-            FROM study_sessions ss
-            JOIN students s ON ss.student_id = s.id
-            WHERE ss.id = %s AND ss.status = 'in_progress'
-        """, (session_id,))
-        session = cursor.fetchone()
-    
-    if not session:
-        # اگر جلسه فعال نیست، job را متوقف کن
-        job.schedule_removal()
-        return
-    
-    # به‌روزرسانی زمان آخرین بررسی
-    update_check_time(session_id)
-    
-    # ارسال پیام بررسی
-    try:
-        await context.bot.send_message(
-            chat_id=session['telegram_id'],
-            text=f"🔍 بررسی ۲۰ دقیقه‌ای\n\n"
-                 f"👤 {session['full_name']}\n"
-                 f"📚 {session['subject_name']}\n\n"
-                 f"لطفاً وضعیت مطالعه خود را گزارش دهید:",
-            reply_markup=get_progress_check_keyboard()
-        )
-    except Exception as e:
-        logger.error(f"Failed to send progress check to {session['telegram_id']}: {e}")
-
-async def handle_progress_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مدیریت پاسخ‌های بررسی ۲۰ دقیقه‌ای"""
+async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت ارسال پیام همگانی"""
     text = update.message.text
-    user = update.effective_user
     
-    # پیدا کردن جلسه فعال کاربر
-    student = get_student(user.id)
-    if not student:
+    if text == "🔙 بازگشت":
         await update.message.reply_text(
-            "❌ شما به عنوان دانش‌آموز ثبت‌نام نکرده‌اید.",
-            reply_markup=get_main_menu_keyboard()
+            "پنل ادمین:",
+            reply_markup=get_admin_panel_keyboard()
         )
-        return
+        return ADMIN_PANEL
     
-    active_session = get_student_active_session(student['id'])
-    if not active_session:
-        await update.message.reply_text(
-            "❌ جلسه مطالعه فعالی ندارید.",
-            reply_markup=get_student_panel_keyboard()
-        )
-        return
+    # ارسال پیام به تمام دانش‌آموزان
+    student_ids = get_all_students_telegram_ids()
+    success_count = 0
     
-    # ذخیره پاسخ
-    conn = get_db_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            INSERT INTO progress_checks 
-            (session_id, check_time, student_response, response_time)
-            VALUES (%s, %s, %s, %s)
-        """, (active_session['id'], datetime.now(IRAN_TZ), text, datetime.now(IRAN_TZ)))
-        conn.commit()
-    conn.close()
-    
-    if text == "✅ در حال پیشرفت":
-        response_text = "✅ عالی! ادامه بده..."
-    elif text == "⚠️ مشکل دارم":
-        response_text = "⚠️ اگر نیاز به کمک داری، با مشاورت در میان بذار."
-    elif text == "❌ متوقف کردم":
-        response_text = "❌ مطالعه متوقف شد. می‌خواهی درس جدیدی شروع کنی؟"
-        # پایان جلسه
-        end_study_session(active_session['id'])
-        # حذف job
-        if 'check_jobs' in context.chat_data:
-            current_jobs = [job for job in context.chat_data['check_jobs'] if job.name == f"check_{active_session['id']}"]
-            for job in current_jobs:
-                job.schedule_removal()
-    else:
-        response_text = "پاسخ شما ثبت شد."
+    for student_id in student_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=student_id,
+                text=f"📢 پیام همگانی:\n\n{text}"
+            )
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send broadcast to {student_id}: {e}")
     
     await update.message.reply_text(
-        response_text,
-        reply_markup=get_study_management_keyboard()
+        f"✅ پیام همگانی به {success_count} دانش‌آموز ارسال شد.",
+        reply_markup=get_admin_panel_keyboard()
+    )
+    return ADMIN_PANEL
+
+async def handle_add_advisor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت افزودن مشاور"""
+    text = update.message.text
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "پنل ادمین:",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return ADMIN_PANEL
+    
+    elif text == "➕ افزودن مشاور جدید":
+        await update.message.reply_text(
+            "👤 لطفاً اطلاعات مشاور جدید را به فرمت زیر ارسال کنید:\n\n"
+            "آیدی_تلگرام نام_کامل\n\n"
+            "مثال:\n"
+            "123456789 علی محمدی"
+        )
+        return ADD_ADVISOR
+    
+    elif text == "📋 لیست مشاوران":
+        advisors = get_all_advisors()
+        
+        if not advisors:
+            await update.message.reply_text(
+                "👤 هیچ مشاوری ثبت نشده است.",
+                reply_markup=get_advisors_management_keyboard()
+            )
+            return ADD_ADVISOR
+        
+        advisors_text = "👤 لیست مشاوران:\n\n"
+        
+        for advisor in advisors:
+            role = "👑 ادمین" if advisor['is_admin'] else "👤 مشاور"
+            advisors_text += (
+                f"{role}: {advisor['full_name']}\n"
+                f"🆔 آیدی: {advisor['telegram_id']}\n"
+                f"────────────────────\n"
+            )
+        
+        await update.message.reply_text(
+            advisors_text,
+            reply_markup=get_advisors_management_keyboard()
+        )
+    
+    else:
+        # پردازش اطلاعات مشاور جدید
+        try:
+            parts = text.split()
+            if len(parts) < 2:
+                raise ValueError("فرمت نامعتبر")
+            
+            telegram_id = int(parts[0])
+            full_name = ' '.join(parts[1:])
+            
+            # ثبت مشاور جدید
+            advisor_id = register_advisor(telegram_id, full_name, False)
+            
+            if advisor_id:
+                await update.message.reply_text(
+                    f"✅ مشاور جدید با موفقیت اضافه شد:\n\n"
+                    f"👤 نام: {full_name}\n"
+                    f"🆔 آیدی: {telegram_id}",
+                    reply_markup=get_advisors_management_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ خطا در ثبت مشاور جدید.",
+                    reply_markup=get_advisors_management_keyboard()
+                )
+        
+        except ValueError:
+            await update.message.reply_text(
+                "❌ فرمت اطلاعات نامعتبر است.\n\n"
+                "لطفاً اطلاعات را به فرمت زیر ارسال کنید:\n"
+                "آیدی_تلگرام نام_کامل\n\n"
+                "مثال:\n"
+                "123456789 علی محمدی",
+                reply_markup=get_advisors_management_keyboard()
+            )
+
+async def handle_plan_grade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """انتخاب پایه برای برنامه جدید"""
+    text = update.message.text
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "پنل ادمین:",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return ADMIN_PANEL
+    
+    if text in ["🎓 دوازدهم تجربی", "📊 دوازدهم ریاضی"]:
+        grade = "دوازدهم تجربی" if "تجربی" in text else "دوازدهم ریاضی"
+        context.user_data['plan_grade'] = grade
+        
+        await update.message.reply_text(
+            f"📝 ایجاد برنامه جدید برای پایه {grade}\n\n"
+            f"لطفاً شماره روز را وارد کنید:",
+            reply_markup=get_back_keyboard()
+        )
+        return PLAN_DAY
+    
+    await update.message.reply_text(
+        "لطفاً یکی از پایه‌ها را انتخاب کنید:",
+        reply_markup=get_plan_grade_keyboard()
     )
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لغو عملیات"""
+async def handle_plan_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ورود شماره روز و توضیحات"""
+    text = update.message.text
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "📝 لطفاً پایه مورد نظر را انتخاب کنید:",
+            reply_markup=get_plan_grade_keyboard()
+        )
+        return PLAN_GRADE
+    
+    try:
+        # استخراج شماره روز و توضیحات از متن
+        parts = text.split('(', 1)
+        day_number = int(parts[0].strip())
+        
+        day_description = None
+        if len(parts) > 1 and parts[1].endswith(')'):
+            day_description = parts[1][:-1].strip()
+        
+        context.user_data['plan_day'] = day_number
+        context.user_data['day_description'] = day_description
+        
+        await update.message.reply_text(
+            f"📅 روز {day_number} {f'({day_description})' if day_description else ''}\n\n"
+            f"📚 حالا نام دروس را به ترتیب وارد کنید (هر خط یک درس):\n\n"
+            f"مثال:\n"
+            f"ریاضی\n"
+            f"فیزیک\n"
+            f"شیمی\n\n"
+            f"پس از اتمام، گزینه '✅ پایان' را انتخاب کنید.",
+            reply_markup=get_plan_subjects_keyboard()
+        )
+        return PLAN_SUBJECTS
+    
+    except ValueError:
+        await update.message.reply_text(
+            "❌ شماره روز باید یک عدد باشد.\n\n"
+            f"لطفاً شماره روز را وارد کنید (مثال: '۵' یا '۵(زوج درس دهم)'):",
+            reply_markup=get_back_keyboard()
+        )
+
+async def handle_plan_subjects(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ورود دروس برنامه"""
+    text = update.message.text
+    user_data = context.user_data
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            f"📝 لطفاً شماره روز را وارد کنید:",
+            reply_markup=get_back_keyboard()
+        )
+        return PLAN_DAY
+    
+    if text == "✅ پایان":
+        if 'subjects' not in user_data or not user_data['subjects']:
+            await update.message.reply_text(
+                "❌ حداقل یک درس باید اضافه شود.",
+                reply_markup=get_plan_subjects_keyboard()
+            )
+            return PLAN_SUBJECTS
+        
+        # ذخیره برنامه در دیتابیس
+        advisor = get_advisor(update.effective_user.id)
+        if not advisor:
+            await update.message.reply_text(
+                "❌ شما به عنوان مشاور ثبت‌نام نکرده‌اید.",
+                reply_markup=get_admin_panel_keyboard()
+            )
+            return ADMIN_PANEL
+        
+        success = create_study_plan(
+            day_number=user_data['plan_day'],
+            day_description=user_data.get('day_description'),
+            grade=user_data['plan_grade'],
+            subjects=user_data['subjects'],
+            created_by=advisor['id']
+        )
+        
+        if success:
+            day_text = f"روز {user_data['plan_day']}"
+            if user_data.get('day_description'):
+                day_text += f" ({user_data['day_description']})"
+            
+            subjects_text = '\n'.join([f"• {s['name']}" for s in user_data['subjects']])
+            
+            await update.message.reply_text(
+                f"✅ برنامه درسی با موفقیت ایجاد شد!\n\n"
+                f"📘 {day_text} - {user_data['plan_grade']}\n"
+                f"📚 دروس:\n{subjects_text}",
+                reply_markup=get_admin_panel_keyboard()
+            )
+            
+            # پاک کردن داده‌های موقت
+            if 'plan_day' in user_data:
+                del user_data['plan_day']
+            if 'plan_grade' in user_data:
+                del user_data['plan_grade']
+            if 'day_description' in user_data:
+                del user_data['day_description']
+            if 'subjects' in user_data:
+                del user_data['subjects']
+            
+            return ADMIN_PANEL
+        else:
+            await update.message.reply_text(
+                "❌ خطا در ایجاد برنامه درسی.",
+                reply_markup=get_admin_panel_keyboard()
+            )
+            return ADMIN_PANEL
+    
+    else:
+        # اضافه کردن درس جدید
+        if 'subjects' not in user_data:
+            user_data['subjects'] = []
+        
+        user_data['subjects'].append({
+            'name': text.strip(),
+            'order': len(user_data['subjects']) + 1
+        })
+        
+        subjects_count = len(user_data['subjects'])
+        await update.message.reply_text(
+            f"✅ درس '{text}' اضافه شد. ({subjects_count} درس)\n\n"
+            f"درس بعدی را وارد کنید یا برای پایان، گزینه '✅ پایان' را انتخاب کنید.",
+            reply_markup=get_plan_subjects_keyboard()
+        )
+
+async def handle_unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت پیام‌های ناشناخته"""
     await update.message.reply_text(
-        "عملیات لغو شد.",
+        "❌ دستور نامعتبر!\n\n"
+        "لطفاً از گزینه‌های منو استفاده کنید.",
         reply_markup=get_main_menu_keyboard()
     )
-    return GRADE_SELECTION
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت خطاها"""
+    logger.error(f"Error: {context.error}", exc_info=context.error)
+    
+    if update and update.effective_message:
+        await update.effective_message.reply_text(
+            "❌ خطایی رخ داد! لطفاً مجدداً تلاش کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
 
 def main():
     """تابع اصلی"""
@@ -1647,7 +1701,13 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
+            ],
+            STUDENT_PANEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_management)
+            ],
+            ADMIN_PANEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
             ],
             SELECT_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
@@ -1658,18 +1718,11 @@ def main():
             SELECT_SUBJECT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_subject_selection)
             ],
-            STUDENT_PANEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_panel),
-                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم)$"), handle_progress_response)
-            ],
-            ADMIN_PANEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
+            PLAN_GRADE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_grade)
             ],
             PLAN_DAY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_day)
-            ],
-            PLAN_GRADE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_grade)
             ],
             PLAN_SUBJECTS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_subjects)
@@ -1678,17 +1731,30 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_message)
             ],
             ADD_ADVISOR: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisors_management)
-            ]
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_advisor)
+            ],
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
-        allow_reentry=True
+        fallbacks=[CommandHandler('start', start)]
     )
     
+    # اضافه کردن هندلرها
     application.add_handler(conv_handler)
     
+    # هندلر برای پاسخ به چک‌های وضعیت
+    application.add_handler(MessageHandler(
+        filters.Text(["✅ در حال پیشرفت", "⚠️ مشکل دارم", "❌ متوقف کردم", "⏹️ اتمام مطالعه"]),
+        handle_progress_check_response
+    ))
+    
+    # هندلر برای پیام‌های ناشناخته
+    application.add_handler(MessageHandler(filters.ALL, handle_unknown_message))
+    
+    # هندلر خطا
+    application.add_error_handler(error_handler)
+    
     # شروع ربات
-    logger.info("🤖 ربات شروع به کار کرد...")
+    logger.info("🤖 Bot is starting...")
     application.run_polling()
+
 if __name__ == '__main__':
     main()
