@@ -650,8 +650,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "برای شروع از گزینه‌های زیر استفاده کنید:"
     )
     
-    # بررسی ادمین بودن
-    if is_admin(user.id):
+    # بررسی ادمین بودن یا مشاور بودن
+    advisor = get_advisor(user.id)
+    if advisor and (advisor['is_admin'] or True):  # همه مشاوران پنل ادمین ببینند
         await update.message.reply_text(
             welcome_text,
             reply_markup=get_admin_panel_keyboard()
@@ -1494,14 +1495,15 @@ async def handle_add_advisor(update: Update, context: ContextTypes.DEFAULT_TYPE)
             telegram_id = int(parts[0])
             full_name = ' '.join(parts[1:])
             
-            # ثبت مشاور جدید
-            advisor_id = register_advisor(telegram_id, full_name, False)
+            # ثبت مشاور جدید با دسترسی ادمین
+            advisor_id = register_advisor(telegram_id, full_name, True)  # is_admin=True
             
             if advisor_id:
                 await update.message.reply_text(
                     f"✅ مشاور جدید با موفقیت اضافه شد:\n\n"
                     f"👤 نام: {full_name}\n"
-                    f"🆔 آیدی: {telegram_id}",
+                    f"🆔 آیدی: {telegram_id}\n"
+                    f"🎯 دسترسی: پنل مدیریت",
                     reply_markup=get_advisors_management_keyboard()
                 )
             else:
