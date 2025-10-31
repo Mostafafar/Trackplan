@@ -1545,13 +1545,14 @@ async def handle_edit_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # اگر عدد وارد شده، آن را به عنوان کد برنامه در نظر بگیر
         try:
             plan_id = int(text)
-            # این مورد توسط handle_plan_selection_for_edit پردازش خواهد شد
+            # مستقیماً تابع را فراخوانی کن
             return await handle_plan_selection_for_edit(update, context)
         except ValueError:
             await update.message.reply_text(
                 "لطفاً یکی از گزینه‌ها را انتخاب کنید یا کد برنامه را وارد کنید:",
                 reply_markup=get_edit_plans_keyboard()
             )
+            return EDIT_PLANS
 async def handle_plan_selection_for_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب برنامه برای ویرایش"""
     text = update.message.text
@@ -1611,10 +1612,6 @@ async def handle_plan_selection_for_edit(update: Update, context: ContextTypes.D
         return EDIT_PLAN_DETAIL
         
     except ValueError:
-        # اگر عدد معتبر نبود، بررسی کن شاید در حالت جستجو هستیم
-        if context.user_data.get('search_mode'):
-            return await handle_edit_plans(update, context)
-        
         await update.message.reply_text(
             "❌ لطفاً یک کد برنامه معتبر وارد کنید.",
             reply_markup=get_back_keyboard()
@@ -2535,7 +2532,7 @@ def main():
             ],
             EDIT_PLANS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plans),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_selection_for_edit)
+                
             ],
             EDIT_PLAN_DETAIL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_actions)
