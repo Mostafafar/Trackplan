@@ -122,8 +122,8 @@ def init_database():
                ADD CONSTRAINT plan_edit_history_plan_id_fkey 
                FOREIGN KEY (plan_id) REFERENCES study_plans(id) ON DELETE CASCADE
            """)
-       except Exception as e:
-           logger.warning(f"Foreign key update skipped: {e}") 
+        except Exception as e:
+            logger.warning(f"Foreign key update skipped: {e}") 
         # جدول جلسات مطالعه
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS study_sessions (
