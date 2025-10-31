@@ -489,11 +489,13 @@ def get_advisor_by_id(advisor_id: int):
 # --- توابع گزارش‌گیری ---
 
 def get_daily_report(student_id: int, day_number: int):
-    """گزارش روزانه دانش‌آموز"""
+    """گزارش روزانه دانش‌آموز با جزئیات چک‌ها"""
     conn = get_db_connection()
     with conn.cursor() as cursor:
+        # دریافت جلسات
         cursor.execute("""
             SELECT 
+                id,
                 subject_name,
                 start_time,
                 end_time,
@@ -504,7 +506,25 @@ def get_daily_report(student_id: int, day_number: int):
             WHERE student_id = %s AND day_number = %s
             ORDER BY start_time
         """, (student_id, day_number))
-        result = cursor.fetchall()
+        sessions = cursor.fetchall()
+        
+        # برای هر جلسه، چک‌ها را دریافت کن
+        result = []
+        for session in sessions:
+            cursor.execute("""
+                SELECT 
+                    check_time,
+                    student_response,
+                    response_time
+                FROM progress_checks 
+                WHERE session_id = %s 
+                ORDER BY check_time
+            """, (session['id'],))
+            checks = cursor.fetchall()
+            
+            session['checks'] = checks
+            result.append(session)
+    
     conn.close()
     return result
 
