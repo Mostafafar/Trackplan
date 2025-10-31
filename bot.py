@@ -1446,7 +1446,7 @@ async def show_overall_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 async def show_active_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش جلسات فعال"""
+    """نمایش جلسات فعال با جزئیات کامل"""
     active_sessions = get_active_sessions()
     
     if not active_sessions:
@@ -1462,20 +1462,61 @@ async def show_active_sessions(update: Update, context: ContextTypes.DEFAULT_TYP
         start_time = session['start_time'].astimezone(IRAN_TZ).strftime("%H:%M")
         duration = (datetime.now(IRAN_TZ) - session['start_time'].astimezone(IRAN_TZ)).total_seconds() / 60
         
+        # دریافت جزئیات چک‌ها
+        checks = get_session_checks(session['session_id'])
+        checks_details = []
+        
+        for check in checks:
+            check_time = check['check_time'].astimezone(IRAN_TZ).strftime("%H:%M")
+            response = check.get('student_response', 'بدون پاسخ')
+            checks_details.append(f"{check_time}: {response}")
+        
         sessions_text += (
-            f"🎓 {session['full_name']}\n"
-            f"📚 درس: {session['subject_name']}\n"
+            f"🎓 دانش‌آموز: {session['full_name']}\n"
+            f"📚 پایه: {session['grade']}\n"
+            f"👤 مشاور: {session['advisor_name'] or 'تعیین نشده'}\n"
+            f"📖 درس: {session['subject_name']}\n"
+            f"📅 روز: {session['day_number']}\n"
             f"🕐 شروع: {start_time}\n"
             f"⏱️ مدت: {int(duration)} دقیقه\n"
-            f"🔢 چک‌ها: {session['check_count']}\n"
-            f"────────────────────\n"
+            f"🔢 تعداد چک‌ها: {session['check_count']}\n"
         )
+        
+        if checks_details:
+            sessions_text += f"📋 تاریخچه چک‌ها:\n"
+            for i, check_detail in enumerate(checks_details, 1):
+                sessions_text += f"  {i}. {check_detail}\n"
+        else:
+            sessions_text += f"📋 چک‌ها: هنوز چکی انجام نشده\n"
+        
+        sessions_text += "────────────────────\n"
     
-    await update.message.reply_text(
-        sessions_text,
-        reply_markup=get_admin_panel_keyboard()
-    )
-
+    # اگر متن خیلی طولانی شد، آن را تقسیم کنیم
+    if len(sessions_text) > 4000:
+        parts = []
+        current_part = ""
+        lines = sessions_text.split('\n')
+        
+        for line in lines:
+            if len(current_part + line + '\n') > 4000:
+                parts.append(current_part)
+                current_part = line + '\n'
+            else:
+                current_part += line + '\n'
+        
+        if current_part:
+            parts.append(current_part)
+        
+        for i, part in enumerate(parts):
+            if i == 0:
+                await update.message.reply_text(part, reply_markup=get_admin_panel_keyboard())
+            else:
+                await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(
+            sessions_text,
+            reply_markup=get_admin_panel_keyboard()
+        )
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت ارسال پیام همگانی"""
     text = update.message.text
