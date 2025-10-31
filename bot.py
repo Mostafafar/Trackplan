@@ -50,7 +50,6 @@ def get_db_connection():
     except Exception as e:
         logger.error(f"❌ Database connection failed: {e}")
         raise
-
 def init_database():
     """ایجاد جداول مورد نیاز"""
     conn = get_db_connection()
@@ -78,7 +77,7 @@ def init_database():
             )
         """)
         
-        # جدول برنامه‌های درسی
+        # جدول برنامه‌های درسی - با ستون day_description
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS study_plans (
                 id SERIAL PRIMARY KEY,
@@ -125,6 +124,18 @@ def init_database():
     
     create_default_admin()
     conn.close()
+
+def create_study_plan(day_number: int, day_description: str, grade: str, subjects: List[Dict], created_by: int):
+    """ایجاد برنامه درسی"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO study_plans (day_number, day_description, grade, subjects, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (day_number, day_description, grade, json.dumps(subjects), created_by))
+        conn.commit()
+    conn.close()
+    return True
 
 def create_default_admin():
     """ایجاد ادمین پیش‌فرض"""
@@ -233,17 +244,7 @@ def is_admin(telegram_id: int):
 
 # --- توابع مدیریت برنامه‌های درسی ---
 
-def create_study_plan(day_number: int, day_description: str, grade: str, subjects: List[Dict], created_by: int):
-    """ایجاد برنامه درسی"""
-    conn = get_db_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            INSERT INTO study_plans (day_number, day_description, grade, subjects, created_by)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (day_number, day_description, grade, json.dumps(subjects), created_by))
-        conn.commit()
-    conn.close()
-    return True
+
 
 def get_study_plan(day_number: int, grade: str, advisor_id: int = None):
     """دریافت برنامه درسی"""
@@ -1692,10 +1693,25 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_menu_keyboard()
         )
 
+def add_day_description_column():
+    """اضافه کردن ستون day_description به جدول study_plans"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            ALTER TABLE study_plans 
+            ADD COLUMN IF NOT EXISTS day_description VARCHAR(255)
+        """)
+        conn.commit()
+    conn.close()
+    logger.info("✅ Column day_description added to study_plans table")
+
 def main():
     """تابع اصلی"""
     # ایجاد دیتابیس و جداول
     init_database()
+    
+    # اضافه کردن ستون day_description اگر وجود ندارد
+    add_day_description_column()
     
     # ایجاد اپلیکیشن
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -1705,7 +1721,7 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)  # تغییر از handle_main_menu
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
             ],
             SELECT_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
