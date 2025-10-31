@@ -428,28 +428,42 @@ def update_check_time(session_id: int):
 
 
 def get_active_sessions():
+def get_active_sessions():
     """دریافت جلسات فعال - فقط آخرین جلسه هر دانش‌آموز"""
     conn = get_db_connection()
     with conn.cursor() as cursor:
         cursor.execute("""
             SELECT DISTINCT ON (s.id) 
+                s.id as student_id,
                 s.full_name, 
+                s.grade,
                 ss.subject_name, 
                 ss.start_time, 
                 ss.check_count, 
-                ss.id, 
-                ss.student_id, 
-                sp.created_by as advisor_id
+                ss.id as session_id,
+                ss.day_number,
+                a.full_name as advisor_name
             FROM study_sessions ss
             JOIN students s ON ss.student_id = s.id
-            LEFT JOIN study_plans sp ON ss.day_number = sp.day_number AND s.grade = sp.grade
+            LEFT JOIN advisors a ON s.advisor_id = a.id
             WHERE ss.status = 'in_progress'
             ORDER BY s.id, ss.start_time DESC
         """)
         result = cursor.fetchall()
     conn.close()
     return result
-
+def get_session_checks(session_id: int):
+    """دریافت تمام چک‌های یک جلسه مطالعه"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT * FROM progress_checks 
+            WHERE session_id = %s 
+            ORDER BY check_time
+        """, (session_id,))
+        result = cursor.fetchall()
+    conn.close()
+    return result
 def get_student_active_session(student_id: int):
     """دریافت جلسه فعال دانش‌آموز"""
     conn = get_db_connection()
