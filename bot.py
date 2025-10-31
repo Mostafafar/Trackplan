@@ -142,13 +142,26 @@ def create_default_admin():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
+            # ادمین اصلی
             cursor.execute("""
                 INSERT INTO advisors (telegram_id, full_name, is_admin) 
                 VALUES (%s, %s, %s)
-                ON CONFLICT (telegram_id) DO NOTHING
+                ON CONFLICT (telegram_id) DO UPDATE SET
+                full_name = EXCLUDED.full_name,
+                is_admin = EXCLUDED.is_admin
             """, (6680287530, "مدیر سیستم", True))
+            
+            # مشاوران دیگر - is_admin=True برای دسترسی به پنل
+            cursor.execute("""
+                INSERT INTO advisors (telegram_id, full_name, is_admin) 
+                VALUES (%s, %s, %s)
+                ON CONFLICT (telegram_id) DO UPDATE SET
+                full_name = EXCLUDED.full_name,
+                is_admin = EXCLUDED.is_admin
+            """, (123456789, "مشاور نمونه", True))
+            
             conn.commit()
-            logger.info("✅ Default admin created")
+            logger.info("✅ Default admin and advisors created")
         conn.close()
     except Exception as e:
         logger.error(f"❌ Error creating default admin: {e}")
