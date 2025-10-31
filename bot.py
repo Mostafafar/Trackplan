@@ -664,6 +664,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return GRADE_SELECTION
 
+
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت منوی اصلی"""
     text = update.message.text
@@ -677,6 +678,7 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif text == "📚 برنامه‌های درسی":
         await show_all_study_plans_to_student(update, context)
+        return GRADE_SELECTION
     
     elif text == "📊 گزارش من":
         student = get_student(update.effective_user.id)
@@ -687,12 +689,14 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ شما به عنوان دانش‌آموز ثبت‌نام نکرده‌اید.",
                 reply_markup=get_main_menu_keyboard()
             )
+        return GRADE_SELECTION
     
     else:
         await update.message.reply_text(
             "لطفاً یکی از گزینه‌های منو را انتخاب کنید:",
             reply_markup=get_main_menu_keyboard()
         )
+        return GRADE_SELECTION
 
 async def show_all_study_plans_to_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """نمایش برنامه‌های درسی به دانش‌آموز"""
@@ -763,7 +767,7 @@ async def handle_grade_selection(update: Update, context: ContextTypes.DEFAULT_T
         "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
         reply_markup=get_grade_selection_keyboard()
     )
-
+    return GRADE_SELECTION
 async def handle_advisor_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب مشاور"""
     text = update.message.text
@@ -1703,12 +1707,6 @@ def main():
             GRADE_SELECTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
             ],
-            STUDENT_PANEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_management)
-            ],
-            ADMIN_PANEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
-            ],
             SELECT_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
             ],
@@ -1718,11 +1716,18 @@ def main():
             SELECT_SUBJECT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_subject_selection)
             ],
-            PLAN_GRADE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_grade)
+            STUDENT_PANEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_management),
+                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|⏹️ اتمام مطالعه)$"), handle_progress_check_response)
+            ],
+            ADMIN_PANEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
             ],
             PLAN_DAY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_day)
+            ],
+            PLAN_GRADE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_grade)
             ],
             PLAN_SUBJECTS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_subjects)
@@ -1732,28 +1737,16 @@ def main():
             ],
             ADD_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_advisor)
-            ],
+            ]
         },
-        fallbacks=[CommandHandler('start', start)]
+        fallbacks=[CommandHandler('start', start)],
+        allow_reentry=True
     )
     
-    # اضافه کردن هندلرها
     application.add_handler(conv_handler)
     
-    # هندلر برای پاسخ به چک‌های وضعیت
-    application.add_handler(MessageHandler(
-        filters.Text(["✅ در حال پیشرفت", "⚠️ مشکل دارم", "❌ متوقف کردم", "⏹️ اتمام مطالعه"]),
-        handle_progress_check_response
-    ))
-    
-    # هندلر برای پیام‌های ناشناخته
-    application.add_handler(MessageHandler(filters.ALL, handle_unknown_message))
-    
-    # هندلر خطا
-    application.add_error_handler(error_handler)
-    
     # شروع ربات
-    logger.info("🤖 Bot is starting...")
+    logger.info("🤖 ربات شروع به کار کرد...")
     application.run_polling()
 
 if __name__ == '__main__':
