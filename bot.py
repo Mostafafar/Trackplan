@@ -1512,7 +1512,7 @@ async def handle_add_advisor(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
             if advisor_id:
                 await update.message.reply_text(
-                    f"✅ مشاور جدید با موفقیت اضافه شد:\n\n"
+                    f"✅ ادمین جدید با موفقیت اضافه شد:\n\n"
                     f"👤 نام: {full_name}\n"
                     f"🆔 آیدی: {telegram_id}\n"
                     f"🎯 دسترسی: پنل مدیریت",
@@ -1520,7 +1520,7 @@ async def handle_add_advisor(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
             else:
                 await update.message.reply_text(
-                    "❌ خطا در ثبت مشاور جدید.",
+                    "❌ خطا در ثبت ادمین جدید.",
                     reply_markup=get_advisors_management_keyboard()
                 )
         
@@ -1532,7 +1532,7 @@ async def handle_add_advisor(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "مثال:\n"
                 "123456789 علی محمدی",
                 reply_markup=get_advisors_management_keyboard()
-            )
+    )
 
 async def handle_plan_grade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """انتخاب پایه برای برنامه جدید"""
