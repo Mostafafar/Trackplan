@@ -1542,11 +1542,84 @@ async def handle_edit_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['search_mode'] = False
             return EDIT_PLANS
         
-        await update.message.reply_text(
-            "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
-            reply_markup=get_edit_plans_keyboard()
+        # اگر عدد وارد شده، آن را به عنوان کد برنامه در نظر بگیر
+        try:
+            plan_id = int(text)
+            # این مورد توسط handle_plan_selection_for_edit پردازش خواهد شد
+            return await handle_plan_selection_for_edit(update, context)
+        except ValueError:
+            await update.message.reply_text(
+                "لطفاً یکی از گزینه‌ها را انتخاب کنید یا کد برنامه را وارد کنید:",
+                reply_markup=get_edit_plans_keyboard()
+            )
+async def handle_plan_selection_for_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت انتخاب برنامه برای ویرایش"""
+    text = update.message.text
+    
+    try:
+        plan_id = int(text)
+        plan = get_study_plan_by_id(plan_id)
+        
+        if not plan:
+            await update.message.reply_text(
+                "❌ برنامه‌ای با این کد یافت نشد.",
+                reply_markup=get_back_keyboard()
+            )
+            return EDIT_PLANS
+        
+        # بررسی دسترسی کاربر
+        user = update.effective_user
+        advisor = get_advisor(user.id)
+        if not advisor:
+            await update.message.reply_text(
+                "❌ شما به عنوان مشاور ثبت‌نام نکرده‌اید.",
+                reply_markup=get_edit_plans_keyboard()
+            )
+            return EDIT_PLANS
+        
+        if not advisor['is_admin'] and plan['created_by'] != advisor['id']:
+            await update.message.reply_text(
+                "❌ شما دسترسی ویرایش این برنامه را ندارید.",
+                reply_markup=get_edit_plans_keyboard()
+            )
+            return EDIT_PLANS
+        
+        context.user_data['editing_plan'] = plan
+        context.user_data['editing_plan_id'] = plan_id
+        
+        # نمایش اطلاعات برنامه
+        day_text = f"روز {plan['day_number']}"
+        if plan.get('day_description'):
+            day_text += f" ({plan['day_description']})"
+        
+        plan_info = (
+            f"📘 برنامه انتخابی:\n\n"
+            f"{day_text} - {plan['grade']}\n"
+            f"👤 مشاور: {plan['creator_name']}\n"
+            f"📚 دروس:\n"
         )
-
+        
+        for i, subject in enumerate(plan['subjects'], 1):
+            plan_info += f"  {i}. {subject['name']}\n"
+        
+        plan_info += f"\nلطفاً اقدام مورد نظر را انتخاب کنید:"
+        
+        await update.message.reply_text(
+            plan_info,
+            reply_markup=get_plan_actions_keyboard()
+        )
+        return EDIT_PLAN_DETAIL
+        
+    except ValueError:
+        # اگر عدد معتبر نبود، بررسی کن شاید در حالت جستجو هستیم
+        if context.user_data.get('search_mode'):
+            return await handle_edit_plans(update, context)
+        
+        await update.message.reply_text(
+            "❌ لطفاً یک کد برنامه معتبر وارد کنید.",
+            reply_markup=get_back_keyboard()
+        )
+        return EDIT_PLANS
 def search_plans(search_term: str, user_id: int):
     """جستجوی برنامه‌ها"""
     conn = get_db_connection()
