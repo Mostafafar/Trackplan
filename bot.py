@@ -93,8 +93,13 @@ def init_database():
                 subjects JSONB NOT NULL,
                 created_by INTEGER,
                 created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW()
+                updated_at TIMESTAMP DEFAULT NOW(),
+                
             )
+        """)
+        cursor.execute("""
+            ALTER TABLE study_plans 
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()
         """)
         
         # جدول تاریخچه ویرایش برنامه‌ها
