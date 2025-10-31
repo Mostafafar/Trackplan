@@ -1555,8 +1555,8 @@ async def handle_edit_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return EDIT_PLANS
 async def handle_plan_selection_for_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب برنامه برای ویرایش"""
-    text = update.message.text
-    
+    text = update.message.text.strip()
+
     try:
         plan_id = int(text)
         plan = get_study_plan_by_id(plan_id)
