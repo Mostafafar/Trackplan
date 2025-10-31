@@ -1705,7 +1705,7 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)  # تغییر از handle_main_menu
             ],
             SELECT_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
@@ -1718,7 +1718,7 @@ def main():
             ],
             STUDENT_PANEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_management),
-                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|⏹️ اتمام مطالعه)$"), handle_progress_check_response)
+                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|ℹ️ اتمام مطالعه)$"), handle_progress_check_response)
             ],
             ADMIN_PANEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
