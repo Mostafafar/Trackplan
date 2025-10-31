@@ -93,7 +93,7 @@ def init_database():
                 subjects JSONB NOT NULL,
                 created_by INTEGER,
                 created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
                 
             )
         """)
