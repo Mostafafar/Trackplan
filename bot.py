@@ -663,9 +663,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "برای شروع از گزینه‌های زیر استفاده کنید:"
     )
     
-    # بررسی ادمین بودن یا مشاور بودن
+    # بررسی ادمین بودن (فقط ادمین‌های ثبت شده)
     advisor = get_advisor(user.id)
-    if advisor and (advisor['is_admin'] or True):  # همه مشاوران پنل ادمین ببینند
+    if advisor and advisor['is_admin']:
         await update.message.reply_text(
             welcome_text,
             reply_markup=get_admin_panel_keyboard()
@@ -678,7 +678,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_menu_keyboard()
     )
     return GRADE_SELECTION
-
 
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت منوی اصلی"""
