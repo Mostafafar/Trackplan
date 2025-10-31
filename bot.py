@@ -1621,12 +1621,16 @@ async def handle_plan_selection_for_edit(update: Update, context: ContextTypes.D
     """مدیریت انتخاب برنامه برای ویرایش"""
     text = update.message.text
     
-    if text == "🔙 بازگشت":
-        await update.message.reply_text(
-            "✏️ مدیریت ویرایش برنامه‌های درسی:",
-            reply_markup=get_edit_plans_keyboard()
-        )
-        return EDIT_PLANS
+    # فقط اگر کاربر در حالت مناسب باشد پردازش کن
+    current_state = await context.application.persistence.get_chat(update.effective_chat.id)
+    if not current_state or 'conversation' not in current_state:
+        return
+    
+    conversation_state = current_state.get('conversation', {}).get('state')
+    
+    # فقط اگر در حالت EDIT_PLANS هستیم پردازش کن
+    if conversation_state != EDIT_PLANS:
+        return
     
     try:
         plan_id = int(text)
@@ -1642,7 +1646,14 @@ async def handle_plan_selection_for_edit(update: Update, context: ContextTypes.D
         # بررسی دسترسی کاربر
         user = update.effective_user
         advisor = get_advisor(user.id)
-        if not advisor or (not advisor['is_admin'] and plan['created_by'] != advisor['id']):
+        if not advisor:
+            await update.message.reply_text(
+                "❌ شما به عنوان مشاور ثبت‌نام نکرده‌اید.",
+                reply_markup=get_edit_plans_keyboard()
+            )
+            return EDIT_PLANS
+        
+        if not advisor['is_admin'] and plan['created_by'] != advisor['id']:
             await update.message.reply_text(
                 "❌ شما دسترسی ویرایش این برنامه را ندارید.",
                 reply_markup=get_edit_plans_keyboard()
@@ -1674,12 +1685,13 @@ async def handle_plan_selection_for_edit(update: Update, context: ContextTypes.D
             reply_markup=get_plan_actions_keyboard()
         )
         return EDIT_PLAN_DETAIL
-    
+        
     except ValueError:
         await update.message.reply_text(
             "❌ لطفاً یک کد برنامه معتبر وارد کنید.",
             reply_markup=get_back_keyboard()
         )
+        return EDIT_PLANS
 
 async def handle_plan_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت اقدامات روی برنامه"""
