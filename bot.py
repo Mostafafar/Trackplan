@@ -426,7 +426,7 @@ def update_check_time(session_id: int):
         conn.commit()
     conn.close()
 
-def get_active_sessions():
+
 def get_active_sessions():
     """دریافت جلسات فعال - فقط آخرین جلسه هر دانش‌آموز"""
     conn = get_db_connection()
