@@ -115,15 +115,15 @@ def init_database():
           )
       """)
         
-       try:
-          cursor.execute("ALTER TABLE plan_edit_history DROP CONSTRAINT IF EXISTS plan_edit_history_plan_id_fkey")
-          cursor.execute("""
-              ALTER TABLE plan_edit_history 
-              ADD CONSTRAINT plan_edit_history_plan_id_fkey 
-              FOREIGN KEY (plan_id) REFERENCES study_plans(id) ON DELETE CASCADE
-          """)
-      except Exception as e:
-          logger.warning(f"Foreign key update skipped: {e}") 
+        try:
+           cursor.execute("ALTER TABLE plan_edit_history DROP CONSTRAINT IF EXISTS plan_edit_history_plan_id_fkey")
+           cursor.execute("""
+               ALTER TABLE plan_edit_history 
+               ADD CONSTRAINT plan_edit_history_plan_id_fkey 
+               FOREIGN KEY (plan_id) REFERENCES study_plans(id) ON DELETE CASCADE
+           """)
+       except Exception as e:
+           logger.warning(f"Foreign key update skipped: {e}") 
         # جدول جلسات مطالعه
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS study_sessions (
