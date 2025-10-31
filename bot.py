@@ -427,16 +427,24 @@ def update_check_time(session_id: int):
     conn.close()
 
 def get_active_sessions():
-    """دریافت جلسات فعال"""
+def get_active_sessions():
+    """دریافت جلسات فعال - فقط آخرین جلسه هر دانش‌آموز"""
     conn = get_db_connection()
     with conn.cursor() as cursor:
         cursor.execute("""
-            SELECT s.full_name, ss.subject_name, ss.start_time, ss.check_count, ss.id, ss.student_id, sp.created_by as advisor_id
+            SELECT DISTINCT ON (s.id) 
+                s.full_name, 
+                ss.subject_name, 
+                ss.start_time, 
+                ss.check_count, 
+                ss.id, 
+                ss.student_id, 
+                sp.created_by as advisor_id
             FROM study_sessions ss
             JOIN students s ON ss.student_id = s.id
             LEFT JOIN study_plans sp ON ss.day_number = sp.day_number AND s.grade = sp.grade
             WHERE ss.status = 'in_progress'
-            ORDER BY ss.start_time
+            ORDER BY s.id, ss.start_time DESC
         """)
         result = cursor.fetchall()
     conn.close()
