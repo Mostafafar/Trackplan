@@ -31,7 +31,12 @@ TELEGRAM_TOKEN = "8493311862:AAF0k6E2LHOImAhTdxXMVRxtD4eSI4k_e8Y"
 IRAN_TZ = timezone('Asia/Tehran')
 
 # حالت‌های گفتگو
-GRADE_SELECTION, STUDENT_PANEL, ADMIN_PANEL, WAITING_PLAN, PLAN_DAY, PLAN_GRADE, PLAN_SUBJECTS, BROADCAST_MESSAGE, SELECT_DAY, SELECT_SUBJECT, SELECT_ADVISOR, ADD_ADVISOR = range(12)
+(
+    GRADE_SELECTION, STUDENT_PANEL, ADMIN_PANEL, WAITING_PLAN, 
+    PLAN_DAY, PLAN_GRADE, PLAN_SUBJECTS, BROADCAST_MESSAGE, 
+    SELECT_DAY, SELECT_SUBJECT, SELECT_ADVISOR, ADD_ADVISOR,
+    EDIT_PLANS, EDIT_PLAN_DETAIL, EDIT_PLAN_DAY, EDIT_PLAN_SUBJECTS
+) = range(16)
 
 # تنظیم لاگ
 logging.basicConfig(
@@ -50,6 +55,7 @@ def get_db_connection():
     except Exception as e:
         logger.error(f"❌ Database connection failed: {e}")
         raise
+
 def init_database():
     """ایجاد جداول مورد نیاز"""
     conn = get_db_connection()
@@ -86,7 +92,20 @@ def init_database():
                 grade VARCHAR(50) NOT NULL,
                 subjects JSONB NOT NULL,
                 created_by INTEGER,
-                created_at TIMESTAMP DEFAULT NOW()
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        # جدول تاریخچه ویرایش برنامه‌ها
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS plan_edit_history (
+                id SERIAL PRIMARY KEY,
+                plan_id INTEGER REFERENCES study_plans(id),
+                edited_by INTEGER REFERENCES advisors(id),
+                old_data JSONB,
+                new_data JSONB,
+                edit_time TIMESTAMP DEFAULT NOW()
             )
         """)
         
@@ -136,6 +155,75 @@ def create_study_plan(day_number: int, day_description: str, grade: str, subject
         conn.commit()
     conn.close()
     return True
+
+def update_study_plan(plan_id: int, day_number: int, day_description: str, grade: str, subjects: List[Dict], edited_by: int):
+    """ویرایش برنامه درسی"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        # ذخیره نسخه قبلی در تاریخچه
+        cursor.execute("SELECT * FROM study_plans WHERE id = %s", (plan_id,))
+        old_plan = cursor.fetchone()
+        
+        if old_plan:
+            cursor.execute("""
+                INSERT INTO plan_edit_history (plan_id, edited_by, old_data, new_data)
+                VALUES (%s, %s, %s, %s)
+            """, (plan_id, edited_by, json.dumps({
+                'day_number': old_plan['day_number'],
+                'day_description': old_plan['day_description'],
+                'grade': old_plan['grade'],
+                'subjects': old_plan['subjects']
+            }), json.dumps({
+                'day_number': day_number,
+                'day_description': day_description,
+                'grade': grade,
+                'subjects': subjects
+            })))
+        
+        # آپدیت برنامه
+        cursor.execute("""
+            UPDATE study_plans 
+            SET day_number = %s, 
+                day_description = %s,
+                grade = %s,
+                subjects = %s,
+                updated_at = NOW()
+            WHERE id = %s
+        """, (day_number, day_description, grade, json.dumps(subjects), plan_id))
+        conn.commit()
+    conn.close()
+    return True
+
+def delete_study_plan(plan_id: int):
+    """حذف برنامه درسی"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("DELETE FROM study_plans WHERE id = %s", (plan_id,))
+        conn.commit()
+    conn.close()
+    return True
+
+def get_study_plan_by_id(plan_id: int):
+    """دریافت برنامه با آیدی"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT sp.*, a.full_name as creator_name
+            FROM study_plans sp
+            LEFT JOIN advisors a ON sp.created_by = a.id
+            WHERE sp.id = %s
+        """, (plan_id,))
+        result = cursor.fetchone()
+        if result and result['subjects']:
+            if isinstance(result['subjects'], str):
+                try:
+                    result['subjects'] = json.loads(result['subjects'])
+                except json.JSONDecodeError:
+                    result['subjects'] = []
+            elif not isinstance(result['subjects'], list):
+                result['subjects'] = []
+    conn.close()
+    return result
 
 def create_default_admin():
     """ایجاد ادمین پیش‌فرض"""
@@ -257,8 +345,6 @@ def is_admin(telegram_id: int):
 
 # --- توابع مدیریت برنامه‌های درسی ---
 
-
-
 def get_study_plan(day_number: int, grade: str, advisor_id: int = None):
     """دریافت برنامه درسی"""
     conn = get_db_connection()
@@ -302,6 +388,32 @@ def get_all_plans():
             LEFT JOIN advisors a ON sp.created_by = a.id
             ORDER BY sp.day_number DESC, sp.grade
         """)
+        plans = cursor.fetchall()
+        for plan in plans:
+            if plan['subjects']:
+                if isinstance(plan['subjects'], str):
+                    try:
+                        plan['subjects'] = json.loads(plan['subjects'])
+                    except json.JSONDecodeError:
+                        plan['subjects'] = []
+                elif not isinstance(plan['subjects'], list):
+                    plan['subjects'] = []
+            else:
+                plan['subjects'] = []
+    conn.close()
+    return plans
+
+def get_plans_by_advisor(advisor_id: int):
+    """دریافت برنامه‌های یک مشاور خاص"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT sp.*, a.full_name as creator_name
+            FROM study_plans sp
+            LEFT JOIN advisors a ON sp.created_by = a.id
+            WHERE sp.created_by = %s
+            ORDER BY sp.day_number DESC
+        """, (advisor_id,))
         plans = cursor.fetchall()
         for plan in plans:
             if plan['subjects']:
@@ -426,26 +538,6 @@ def update_check_time(session_id: int):
         conn.commit()
     conn.close()
 
-
-def get_all_active_sessions():
-    """دریافت تمام جلسات فعال (بدون گروه‌بندی)"""
-    conn = get_db_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            SELECT 
-                ss.*,
-                s.full_name,
-                s.grade,
-                a.full_name as advisor_name
-            FROM study_sessions ss
-            JOIN students s ON ss.student_id = s.id
-            LEFT JOIN advisors a ON s.advisor_id = a.id
-            WHERE ss.status = 'in_progress'
-            ORDER BY ss.start_time DESC
-        """)
-        result = cursor.fetchall()
-    conn.close()
-    return result
 def get_active_sessions():
     """دریافت جلسات فعال - فقط آخرین جلسه هر دانش‌آموز"""
     conn = get_db_connection()
@@ -470,6 +562,7 @@ def get_active_sessions():
         result = cursor.fetchall()
     conn.close()
     return result
+
 def get_session_checks(session_id: int):
     """دریافت تمام چک‌های یک جلسه مطالعه"""
     conn = get_db_connection()
@@ -482,6 +575,7 @@ def get_session_checks(session_id: int):
         result = cursor.fetchall()
     conn.close()
     return result
+
 def get_student_active_session(student_id: int):
     """دریافت جلسه فعال دانش‌آموز"""
     conn = get_db_connection()
@@ -501,6 +595,19 @@ def get_advisor_by_id(advisor_id: int):
     with conn.cursor() as cursor:
         cursor.execute("SELECT * FROM advisors WHERE id = %s", (advisor_id,))
         result = cursor.fetchone()
+    conn.close()
+    return result
+
+def get_all_active_sessions_by_student(student_id: int):
+    """دریافت تمام جلسات فعال یک دانش‌آموز"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT * FROM study_sessions 
+            WHERE student_id = %s AND status = 'in_progress'
+            ORDER BY start_time DESC
+        """, (student_id,))
+        result = cursor.fetchall()
     conn.close()
     return result
 
@@ -598,9 +705,10 @@ def get_admin_panel_keyboard():
     """پنل ادمین"""
     keyboard = [
         ["➕ افزودن برنامه جدید", "📝 مشاهده برنامه‌ها"],
-        ["👥 مشاهده دانش‌آموزان", "📊 گزارش کلی"],
-        ["🔍 جلسات فعال", "📢 ارسال پیام همگانی"],
-        ["👨‍🏫 مدیریت مشاوران", "🔙 بازگشت به منوی اصلی"]
+        ["✏️ ویرایش برنامه‌ها", "👥 مشاهده دانش‌آموزان"],
+        ["📊 گزارش کلی", "🔍 جلسات فعال"],
+        ["📢 ارسال پیام همگانی", "👨‍🏫 مدیریت مشاوران"],
+        ["🔙 بازگشت به منوی اصلی"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -707,6 +815,30 @@ def get_subjects_keyboard(day_number: int, grade: str, advisor_id: int):
     keyboard.append(["🔙 بازگشت"])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def get_edit_plans_keyboard():
+    """کیبورد مدیریت ویرایش برنامه‌ها"""
+    keyboard = [
+        ["📋 مشاهده برنامه‌های من", "👁️ مشاهده تمام برنامه‌ها"],
+        ["🔍 جستجوی برنامه", "🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_plan_actions_keyboard():
+    """کیبورد اقدامات روی برنامه"""
+    keyboard = [
+        ["✏️ ویرایش اطلاعات", "📝 ویرایش دروس"],
+        ["❌ حذف برنامه", "🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_edit_plan_details_keyboard():
+    """کیبورد ویرایش جزئیات برنامه"""
+    keyboard = [
+        ["📅 ویرایش شماره روز", "📝 ویرایش توضیحات"],
+        ["🎓 تغییر پایه تحصیلی", "🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 # --- Handlers ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -802,7 +934,6 @@ async def show_all_study_plans_to_student(update: Update, context: ContextTypes.
         reply_markup=get_main_menu_keyboard()
     )
 
-
 async def handle_grade_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب پایه تحصیلی"""
     text = update.message.text
@@ -842,6 +973,7 @@ async def handle_grade_selection(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup=get_grade_selection_keyboard()
     )
     return GRADE_SELECTION
+
 async def handle_advisor_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب مشاور"""
     text = update.message.text
@@ -1050,19 +1182,6 @@ async def handle_subject_selection(update: Update, context: ContextTypes.DEFAULT
         "لطفاً یکی از دروس را انتخاب کنید:",
         reply_markup=get_subjects_keyboard(day_number, grade, advisor_id)
     )
-
-def get_all_active_sessions_by_student(student_id: int):
-    """دریافت تمام جلسات فعال یک دانش‌آموز"""
-    conn = get_db_connection()
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            SELECT * FROM study_sessions 
-            WHERE student_id = %s AND status = 'in_progress'
-            ORDER BY start_time DESC
-        """, (student_id,))
-        result = cursor.fetchall()
-    conn.close()
-    return result
 
 async def progress_check(context: ContextTypes.DEFAULT_TYPE):
     """بررسی وضعیت مطالعه هر ۲۰ دقیقه"""
@@ -1307,6 +1426,7 @@ async def show_student_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         report_text,
         reply_markup=get_student_panel_keyboard()
     )
+
 async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت پنل ادمین"""
     text = update.message.text
@@ -1327,6 +1447,13 @@ async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     elif text == "📝 مشاهده برنامه‌ها":
         await show_all_plans_admin(update, context)
+    
+    elif text == "✏️ ویرایش برنامه‌ها":
+        await update.message.reply_text(
+            "✏️ مدیریت ویرایش برنامه‌های درسی:",
+            reply_markup=get_edit_plans_keyboard()
+        )
+        return EDIT_PLANS
     
     elif text == "👥 مشاهده دانش‌آموزان":
         await show_all_students_admin(update, context)
@@ -1355,6 +1482,414 @@ async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             "لطفاً یکی از گزینه‌های منو را انتخاب کنید:",
             reply_markup=get_admin_panel_keyboard()
+        )
+
+# --- توابع مربوط به ویرایش برنامه‌ها ---
+
+async def handle_edit_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت ویرایش برنامه‌ها"""
+    text = update.message.text
+    user = update.effective_user
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "پنل ادمین:",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return ADMIN_PANEL
+    
+    elif text == "📋 مشاهده برنامه‌های من":
+        # نمایش برنامه‌های ایجاد شده توسط کاربر فعلی
+        advisor = get_advisor(user.id)
+        if not advisor:
+            await update.message.reply_text(
+                "❌ شما به عنوان مشاور ثبت‌نام نکرده‌اید.",
+                reply_markup=get_edit_plans_keyboard()
+            )
+            return EDIT_PLANS
+        
+        plans = get_plans_by_advisor(advisor['id'])
+        await show_plans_for_editing(update, plans, "برنامه‌های شما:")
+        return EDIT_PLANS
+    
+    elif text == "👁️ مشاهده تمام برنامه‌ها":
+        # نمایش تمام برنامه‌ها (فقط برای ادمین)
+        if not is_admin(user.id):
+            await update.message.reply_text(
+                "❌ فقط ادمین‌ها می‌توانند تمام برنامه‌ها را مشاهده کنند.",
+                reply_markup=get_edit_plans_keyboard()
+            )
+            return EDIT_PLANS
+        
+        plans = get_all_plans()
+        await show_plans_for_editing(update, plans, "تمام برنامه‌های درسی:")
+        return EDIT_PLANS
+    
+    elif text == "🔍 جستجوی برنامه":
+        await update.message.reply_text(
+            "🔍 لطفاً شماره روز یا نام پایه را برای جستجو وارد کنید:",
+            reply_markup=get_back_keyboard()
+        )
+        context.user_data['search_mode'] = True
+        return EDIT_PLANS
+    
+    else:
+        # پردازش جستجو
+        if context.user_data.get('search_mode'):
+            search_term = text
+            plans = search_plans(search_term, user.id)
+            await show_plans_for_editing(update, plans, f"نتایج جستجو برای '{search_term}':")
+            context.user_data['search_mode'] = False
+            return EDIT_PLANS
+        
+        await update.message.reply_text(
+            "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
+            reply_markup=get_edit_plans_keyboard()
+        )
+
+def search_plans(search_term: str, user_id: int):
+    """جستجوی برنامه‌ها"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        # بررسی اگر کاربر ادمین است
+        advisor = get_advisor(user_id)
+        if advisor and advisor['is_admin']:
+            cursor.execute("""
+                SELECT sp.*, a.full_name as creator_name
+                FROM study_plans sp
+                LEFT JOIN advisors a ON sp.created_by = a.id
+                WHERE sp.day_number::TEXT LIKE %s OR sp.grade LIKE %s OR sp.day_description LIKE %s
+                ORDER BY sp.day_number DESC
+            """, (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%'))
+        else:
+            cursor.execute("""
+                SELECT sp.*, a.full_name as creator_name
+                FROM study_plans sp
+                LEFT JOIN advisors a ON sp.created_by = a.id
+                WHERE (sp.day_number::TEXT LIKE %s OR sp.grade LIKE %s OR sp.day_description LIKE %s)
+                AND sp.created_by = %s
+                ORDER BY sp.day_number DESC
+            """, (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%', advisor['id']))
+        
+        plans = cursor.fetchall()
+        for plan in plans:
+            if plan['subjects']:
+                if isinstance(plan['subjects'], str):
+                    try:
+                        plan['subjects'] = json.loads(plan['subjects'])
+                    except json.JSONDecodeError:
+                        plan['subjects'] = []
+                elif not isinstance(plan['subjects'], list):
+                    plan['subjects'] = []
+            else:
+                plan['subjects'] = []
+    conn.close()
+    return plans
+
+async def show_plans_for_editing(update: Update, plans: List, title: str):
+    """نمایش برنامه‌ها برای ویرایش"""
+    if not plans:
+        await update.message.reply_text(
+            "📝 هیچ برنامه‌ای یافت نشد.",
+            reply_markup=get_edit_plans_keyboard()
+        )
+        return
+    
+    plans_text = f"{title}\n\n"
+    
+    for i, plan in enumerate(plans, 1):
+        day_text = f"روز {plan['day_number']}"
+        if plan.get('day_description'):
+            day_text += f" ({plan['day_description']})"
+            
+        plans_text += (
+            f"{i}. 📘 {day_text} - {plan['grade']}\n"
+            f"   👤 مشاور: {plan['creator_name']}\n"
+            f"   📚 دروس: {', '.join([s['name'] for s in plan['subjects']])}\n"
+            f"   🆔 کد برنامه: {plan['id']}\n"
+            f"   ────────────────────\n"
+        )
+    
+    plans_text += "\nبرای ویرایش یک برنامه، کد برنامه را وارد کنید:"
+    
+    await update.message.reply_text(
+        plans_text,
+        reply_markup=get_back_keyboard()
+    )
+
+async def handle_plan_selection_for_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت انتخاب برنامه برای ویرایش"""
+    text = update.message.text
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "✏️ مدیریت ویرایش برنامه‌های درسی:",
+            reply_markup=get_edit_plans_keyboard()
+        )
+        return EDIT_PLANS
+    
+    try:
+        plan_id = int(text)
+        plan = get_study_plan_by_id(plan_id)
+        
+        if not plan:
+            await update.message.reply_text(
+                "❌ برنامه‌ای با این کد یافت نشد.",
+                reply_markup=get_back_keyboard()
+            )
+            return EDIT_PLANS
+        
+        # بررسی دسترسی کاربر
+        user = update.effective_user
+        advisor = get_advisor(user.id)
+        if not advisor or (not advisor['is_admin'] and plan['created_by'] != advisor['id']):
+            await update.message.reply_text(
+                "❌ شما دسترسی ویرایش این برنامه را ندارید.",
+                reply_markup=get_edit_plans_keyboard()
+            )
+            return EDIT_PLANS
+        
+        context.user_data['editing_plan'] = plan
+        context.user_data['editing_plan_id'] = plan_id
+        
+        # نمایش اطلاعات برنامه
+        day_text = f"روز {plan['day_number']}"
+        if plan.get('day_description'):
+            day_text += f" ({plan['day_description']})"
+        
+        plan_info = (
+            f"📘 برنامه انتخابی:\n\n"
+            f"{day_text} - {plan['grade']}\n"
+            f"👤 مشاور: {plan['creator_name']}\n"
+            f"📚 دروس:\n"
+        )
+        
+        for i, subject in enumerate(plan['subjects'], 1):
+            plan_info += f"  {i}. {subject['name']}\n"
+        
+        plan_info += f"\nلطفاً اقدام مورد نظر را انتخاب کنید:"
+        
+        await update.message.reply_text(
+            plan_info,
+            reply_markup=get_plan_actions_keyboard()
+        )
+        return EDIT_PLAN_DETAIL
+    
+    except ValueError:
+        await update.message.reply_text(
+            "❌ لطفاً یک کد برنامه معتبر وارد کنید.",
+            reply_markup=get_back_keyboard()
+        )
+
+async def handle_plan_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت اقدامات روی برنامه"""
+    text = update.message.text
+    user_data = context.user_data
+    plan = user_data.get('editing_plan')
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "✏️ مدیریت ویرایش برنامه‌های درسی:",
+            reply_markup=get_edit_plans_keyboard()
+        )
+        return EDIT_PLANS
+    
+    elif text == "✏️ ویرایش اطلاعات":
+        await update.message.reply_text(
+            "✏️ لطفاً بخش مورد نظر برای ویرایش را انتخاب کنید:",
+            reply_markup=get_edit_plan_details_keyboard()
+        )
+        return EDIT_PLAN_DETAIL
+    
+    elif text == "📝 ویرایش دروس":
+        await update.message.reply_text(
+            f"📝 ویرایش دروس برنامه:\n\n"
+            f"در حال حاضر {len(plan['subjects'])} درس در برنامه وجود دارد:\n"
+            f"{chr(10).join([f'{i+1}. {s['name']}' for i, s in enumerate(plan['subjects'])])}\n\n"
+            f"لطفاً دروس جدید را به ترتیب وارد کنید (هر خط یک درس):\n"
+            f"برای حذف یک درس، آن را حذف کنید.\n"
+            f"برای اضافه کردن درس جدید، آن را اضافه کنید.\n\n"
+            f"پس از اتمام، گزینه '✅ پایان' را انتخاب کنید.",
+            reply_markup=get_plan_subjects_keyboard()
+        )
+        user_data['editing_subjects'] = plan['subjects'].copy()
+        return EDIT_PLAN_SUBJECTS
+    
+    elif text == "❌ حذف برنامه":
+        # حذف برنامه
+        success = delete_study_plan(user_data['editing_plan_id'])
+        if success:
+            await update.message.reply_text(
+                "✅ برنامه با موفقیت حذف شد.",
+                reply_markup=get_edit_plans_keyboard()
+            )
+            # پاک کردن داده‌های ویرایش
+            if 'editing_plan' in user_data:
+                del user_data['editing_plan']
+            if 'editing_plan_id' in user_data:
+                del user_data['editing_plan_id']
+            return EDIT_PLANS
+        else:
+            await update.message.reply_text(
+                "❌ خطا در حذف برنامه.",
+                reply_markup=get_plan_actions_keyboard()
+            )
+    
+    elif text == "📅 ویرایش شماره روز":
+        await update.message.reply_text(
+            f"📅 شماره روز فعلی: {plan['day_number']}\n\n"
+            f"لطفاً شماره روز جدید را وارد کنید:",
+            reply_markup=get_back_keyboard()
+        )
+        user_data['editing_field'] = 'day_number'
+    
+    elif text == "📝 ویرایش توضیحات":
+        current_desc = plan.get('day_description', 'تعریف نشده')
+        await update.message.reply_text(
+            f"📝 توضیحات روز فعلی: {current_desc}\n\n"
+            f"لطفاً توضیحات جدید را وارد کنید (یا برای حذف توضیحات، 'حذف' را وارد کنید):",
+            reply_markup=get_back_keyboard()
+        )
+        user_data['editing_field'] = 'day_description'
+    
+    elif text == "🎓 تغییر پایه تحصیلی":
+        await update.message.reply_text(
+            f"🎓 پایه تحصیلی فعلی: {plan['grade']}\n\n"
+            f"لطفاً پایه تحصیلی جدید را انتخاب کنید:",
+            reply_markup=get_plan_grade_keyboard()
+        )
+        user_data['editing_field'] = 'grade'
+    
+    else:
+        # پردازش ویرایش فیلدها
+        if 'editing_field' in user_data:
+            field = user_data['editing_field']
+            new_value = text
+            
+            if field == 'day_number':
+                try:
+                    new_value = int(new_value)
+                except ValueError:
+                    await update.message.reply_text(
+                        "❌ شماره روز باید عدد باشد.",
+                        reply_markup=get_edit_plan_details_keyboard()
+                    )
+                    return EDIT_PLAN_DETAIL
+            
+            elif field == 'day_description' and new_value.lower() == 'حذف':
+                new_value = None
+            
+            elif field == 'grade' and new_value not in ["🎓 دوازدهم تجربی", "📊 دوازدهم ریاضی"]:
+                await update.message.reply_text(
+                    "❌ لطفاً یکی از پایه‌های معتبر را انتخاب کنید.",
+                    reply_markup=get_plan_grade_keyboard()
+                )
+                return EDIT_PLAN_DETAIL
+            
+            # آپدیت برنامه
+            if field == 'grade':
+                new_value = "دوازدهم تجربی" if "تجربی" in new_value else "دوازدهم ریاضی"
+            
+            advisor = get_advisor(update.effective_user.id)
+            success = update_study_plan(
+                plan_id=user_data['editing_plan_id'],
+                day_number=new_value if field == 'day_number' else plan['day_number'],
+                day_description=new_value if field == 'day_description' else plan.get('day_description'),
+                grade=new_value if field == 'grade' else plan['grade'],
+                subjects=plan['subjects'],
+                edited_by=advisor['id']
+            )
+            
+            if success:
+                await update.message.reply_text(
+                    f"✅ {field.replace('_', ' ')} با موفقیت به‌روز شد.",
+                    reply_markup=get_plan_actions_keyboard()
+                )
+                # به‌روزرسانی برنامه در user_data
+                user_data['editing_plan'][field] = new_value
+            else:
+                await update.message.reply_text(
+                    f"❌ خطا در به‌روزرسانی {field.replace('_', ' ')}.",
+                    reply_markup=get_plan_actions_keyboard()
+                )
+            
+            del user_data['editing_field']
+    
+    return EDIT_PLAN_DETAIL
+
+async def handle_edit_plan_subjects(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ویرایش دروس برنامه"""
+    text = update.message.text
+    user_data = context.user_data
+    
+    if text == "🔙 بازگشت":
+        await update.message.reply_text(
+            "لطفاً اقدام مورد نظر را انتخاب کنید:",
+            reply_markup=get_plan_actions_keyboard()
+        )
+        return EDIT_PLAN_DETAIL
+    
+    if text == "✅ پایان":
+        if not user_data.get('editing_subjects'):
+            await update.message.reply_text(
+                "❌ حداقل یک درس باید در برنامه وجود داشته باشد.",
+                reply_markup=get_plan_subjects_keyboard()
+            )
+            return EDIT_PLAN_SUBJECTS
+        
+        # ذخیره تغییرات دروس
+        advisor = get_advisor(update.effective_user.id)
+        plan = user_data['editing_plan']
+        
+        success = update_study_plan(
+            plan_id=user_data['editing_plan_id'],
+            day_number=plan['day_number'],
+            day_description=plan.get('day_description'),
+            grade=plan['grade'],
+            subjects=user_data['editing_subjects'],
+            edited_by=advisor['id']
+        )
+        
+        if success:
+            await update.message.reply_text(
+                f"✅ دروس برنامه با موفقیت به‌روز شد!\n\n"
+                f"📚 دروس جدید:\n"
+                f"{chr(10).join([f'• {s['name']}' for s in user_data['editing_subjects']])}",
+                reply_markup=get_plan_actions_keyboard()
+            )
+            # به‌روزرسانی برنامه در user_data
+            user_data['editing_plan']['subjects'] = user_data['editing_subjects'].copy()
+            del user_data['editing_subjects']
+            return EDIT_PLAN_DETAIL
+        else:
+            await update.message.reply_text(
+                "❌ خطا در به‌روزرسانی دروس.",
+                reply_markup=get_plan_subjects_keyboard()
+            )
+    
+    else:
+        # اضافه کردن درس جدید یا جایگزینی لیست
+        if 'editing_subjects' not in user_data:
+            user_data['editing_subjects'] = []
+        
+        # اگر کاربر چند خط ارسال کرده، همه را به عنوان درس جدید در نظر بگیر
+        lines = text.split('\n')
+        new_subjects = []
+        
+        for i, line in enumerate(lines):
+            if line.strip():  # اگر خط خالی نباشد
+                new_subjects.append({
+                    'name': line.strip(),
+                    'order': i + 1
+                })
+        
+        user_data['editing_subjects'] = new_subjects
+        
+        subjects_count = len(user_data['editing_subjects'])
+        await update.message.reply_text(
+            f"✅ {subjects_count} درس ذخیره شد.\n\n"
+            f"در صورت نیاز تغییرات بیشتری اعمال کنید یا برای پایان، گزینه '✅ پایان' را انتخاب کنید.",
+            reply_markup=get_plan_subjects_keyboard()
         )
 
 async def show_all_plans_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1565,6 +2100,7 @@ async def show_active_sessions(update: Update, context: ContextTypes.DEFAULT_TYP
             sessions_text,
             reply_markup=get_admin_panel_keyboard()
         )
+
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت ارسال پیام همگانی"""
     text = update.message.text
@@ -1676,7 +2212,7 @@ async def handle_add_advisor(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "مثال:\n"
                 "123456789 علی محمدی",
                 reply_markup=get_advisors_management_keyboard()
-    )
+            )
 
 async def handle_plan_grade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """انتخاب پایه برای برنامه جدید"""
@@ -1879,7 +2415,7 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu)
             ],
             SELECT_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
@@ -1892,7 +2428,7 @@ def main():
             ],
             STUDENT_PANEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_management),
-                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|ℹ️ اتمام مطالعه)$"), handle_progress_check_response)
+                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|⏹️ اتمام مطالعه)$"), handle_progress_check_response)
             ],
             ADMIN_PANEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
@@ -1911,6 +2447,16 @@ def main():
             ],
             ADD_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_advisor)
+            ],
+            EDIT_PLANS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plans),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_selection_for_edit)
+            ],
+            EDIT_PLAN_DETAIL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_actions)
+            ],
+            EDIT_PLAN_SUBJECTS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plan_subjects)
             ]
         },
         fallbacks=[CommandHandler('start', start)],
@@ -1918,6 +2464,7 @@ def main():
     )
     
     application.add_handler(conv_handler)
+    application.add_error_handler(error_handler)
     
     # شروع ربات
     logger.info("🤖 ربات شروع به کار کرد...")
