@@ -879,6 +879,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ADMIN_PANEL
     
+    # برای کاربران عادی - ارسال اطلاعات به ادمین خاص
+    # فقط اگر کاربر جدید باشد یا قبلاً ثبت‌نام نکرده باشد
+    student = get_student(user.id)
+    if not student:
+        # ارسال اطلاعات کاربر جدید به ادمین خاص (6680287530)
+        try:
+            await context.bot.send_message(
+                chat_id=6680287530,
+                text=f"👤 کاربر جدید\n\n"
+                     f"🆔 آیدی: {user.id}\n"
+                     f"👤 نام: {user.full_name}\n"
+                     f"📱 نام کاربری: @{user.username if user.username else 'ندارد'}\n"
+                     f"🕐 زمان: {datetime.now(IRAN_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                     f"✅ کاربر /start را زده و در حال ثبت‌نام است."
+            )
+        except Exception as e:
+            logger.error(f"Failed to send new user info to admin 6680287530: {e}")
+    
     # برای کاربران عادی
     await update.message.reply_text(
         welcome_text,
