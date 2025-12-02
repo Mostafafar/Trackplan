@@ -901,15 +901,40 @@ def get_student_panel_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_admin_panel_keyboard():
-    """پنل ادمین"""
+    """پنل ادمین - تغییر نام گزینه گزارش کلی"""
     keyboard = [
         ["➕ افزودن برنامه جدید", "📝 مشاهده برنامه‌ها"],
         ["✏️ ویرایش برنامه‌ها", "👥 مشاهده دانش‌آموزان"],
-        ["📊 گزارش کلی", "🔍 جلسات فعال"],
+        ["📊 گزارش دانش‌آموزی", "🔍 جلسات فعال"],  # تغییر نام از "گزارش کلی" به "گزارش دانش‌آموزی"
         ["📢 ارسال پیام همگانی", "👨‍🏫 مدیریت مشاوران"],
         ["🔙 بازگشت به منوی اصلی"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+def setup_nightly_report_job(application: Application):
+    """تنظیم job برای ارسال گزارش‌های شبانه"""
+    # زمان‌بندی برای ساعت ۲ بامداد به وقت ایران
+    # ابتدا زمان فعلی را به وقت ایران می‌گیریم
+    now = datetime.now(IRAN_TZ)
+    
+    # ساعت ۲ بامداد فردا
+    target_time = now.replace(hour=2, minute=0, second=0, microsecond=0)
+    
+    # اگر الان از ساعت ۲ گذشته، برای فردا برنامه‌ریزی کن
+    if now.hour >= 2:
+        target_time += timedelta(days=1)
+    
+    # محاسبه زمان تا ساعت ۲ بامداد
+    delay_seconds = (target_time - now).total_seconds()
+    
+    logger.info(f"⏰ گزارش شبانه برای ساعت ۲ بامداد تنظیم شد (تا شروع: {delay_seconds} ثانیه)")
+    
+    # تنظیم job تکرار شونده روزانه
+    application.job_queue.run_daily(
+        send_nightly_reports,
+        time=target_time.time(),
+        days=(0, 1, 2, 3, 4, 5, 6),  # همه روزهای هفته
+        name="nightly_reports"
+    )
 
 def get_back_keyboard():
     """دکمه بازگشت ساده"""
@@ -1037,6 +1062,86 @@ def get_edit_plan_details_keyboard():
         ["🎓 تغییر پایه تحصیلی", "🔙 بازگشت"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+async def send_nightly_reports(context: ContextTypes.DEFAULT_TYPE):
+    """ارسال گزارش شبانه به تمام دانش‌آموزان"""
+    logger.info("📊 شروع ارسال گزارش‌های شبانه...")
+    
+    # دریافت تمام دانش‌آموزان
+    students = get_all_students()
+    
+    sent_count = 0
+    failed_count = 0
+    
+    for student in students:
+        try:
+            # دریافت گزارش روز قبل
+            yesterday = datetime.now(IRAN_TZ) - timedelta(days=1)
+            report = get_student_daily_report(student['id'], yesterday)
+            
+            # ساخت پیام گزارش
+            if not report['sessions']:
+                message_text = (
+                    f"🌙 گزارش شبانه\n\n"
+                    f"سلام {report['student']['full_name']} 👋\n\n"
+                    f"📅 دیروز ({yesterday.strftime('%Y/%m/%d')})\n"
+                    f"📊 هیچ فعالیت مطالعاتی ثبت نشده است.\n\n"
+                    f"امروز را با انرژی شروع کن! 💪"
+                )
+            else:
+                total_minutes = report['stats']['total_minutes'] or 0
+                total_hours = total_minutes // 60
+                total_min = total_minutes % 60
+                
+                if total_hours > 0:
+                    total_text = f"{total_hours}:{total_min:02d} ساعت"
+                else:
+                    total_text = f"{total_min} دقیقه"
+                
+                message_text = (
+                    f"🌙 گزارش شبانه\n\n"
+                    f"سلام {report['student']['full_name']} 👋\n\n"
+                    f"📅 دیروز ({yesterday.strftime('%Y/%m/%d')})\n"
+                    f"📊 عملکرد مطالعاتی شما:\n\n"
+                )
+                
+                for i, session in enumerate(report['sessions'], 1):
+                    duration = session['total_duration'] or 0
+                    hours = duration // 60
+                    minutes = duration % 60
+                    
+                    if hours > 0:
+                        dur_text = f"{hours}:{minutes:02d} ساعت"
+                    else:
+                        dur_text = f"{minutes} دقیقه"
+                    
+                    message_text += f"{i}. 🕐 {session['start_time_fa']}\n"
+                    message_text += f"   📚 {session['subject_name']}\n"
+                    message_text += f"   ⏱️ مدت: {dur_text}\n\n"
+                
+                message_text += (
+                    f"📈 آمار روز:\n"
+                    f"  ⏱️ مجموع مطالعه: {total_text}\n"
+                    f"  📚 تعداد جلسات: {report['stats']['total_sessions']}\n\n"
+                    f"فردا هم همین‌طور ادامه بده! 🚀"
+                )
+            
+            # ارسال پیام
+            await context.bot.send_message(
+                chat_id=student['telegram_id'],
+                text=message_text
+            )
+            
+            sent_count += 1
+            logger.info(f"✅ گزارش شبانه ارسال شد به {student['full_name']}")
+            
+            # تأخیر بین ارسال‌ها برای جلوگیری از محدودیت تلگرام
+            await asyncio.sleep(0.5)
+            
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"❌ خطا در ارسال گزارش به {student['full_name']}: {e}")
+    
+    logger.info(f"📊 ارسال گزارش‌های شبانه پایان یافت. ارسال شده: {sent_count}, ناموفق: {failed_count}")
 async def handle_student_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت گزارش‌های دانش‌آموزی"""
     text = update.message.text
@@ -2970,12 +3075,15 @@ def main():
     # ایجاد اپلیکیشن
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # ایجاد Conversation Handler
+    # تنظیم job گزارش شبانه
+    setup_nightly_report_job(application)
+    
+    # ایجاد Conversation Handler با حالت‌های جدید
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)  # تغییر از handle_main_menu
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
             ],
             SELECT_ADVISOR: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
@@ -2988,7 +3096,8 @@ def main():
             ],
             STUDENT_PANEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_management),
-                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|⏹️ اتمام مطالعه)$"), handle_progress_check_response)
+                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|⏹️ اتمام مطالعه)$"), 
+                             handle_progress_check_response)
             ],
             ADMIN_PANEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
@@ -3009,14 +3118,20 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_advisor)
             ],
             EDIT_PLANS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plans),
-                
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plans)
             ],
             EDIT_PLAN_DETAIL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_actions)
             ],
             EDIT_PLAN_SUBJECTS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plan_subjects)
+            ],
+            STUDENT_REPORTS: [  # حالت جدید
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_reports)
+            ],
+            STUDENT_DETAILS: [  # حالت جدید
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_selection),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_details)
             ]
         },
         fallbacks=[CommandHandler('start', start)],
@@ -3028,7 +3143,5 @@ def main():
     
     # شروع ربات
     logger.info("🤖 ربات شروع به کار کرد...")
+    logger.info("📊 سیستم گزارش‌دهی شبانه فعال شد")
     application.run_polling()
-
-if __name__ == '__main__':
-    main()
