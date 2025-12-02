@@ -2110,14 +2110,12 @@ async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif text == "👥 مشاهده دانش‌آموزان":
         await show_all_students_admin(update, context)
     
-    elif text == "📊 گزارش کلی":
-        # تغییر از show_overall_report به گزارش‌های دانش‌آموزی
+    elif text == "📊 گزارش دانش‌آموزی":
         await update.message.reply_text(
             "📊 گزارش‌های دانش‌آموزی:",
             reply_markup=get_student_reports_keyboard()
         )
-        return STUDENT_REPORTS  # حالت جدید
-    
+        return STUDENT_REPORTS
     # ... سایر گزینه‌ها ...
     
     elif text == "🔍 جلسات فعال":
