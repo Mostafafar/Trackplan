@@ -3145,3 +3145,5 @@ def main():
     logger.info("🤖 ربات شروع به کار کرد...")
     logger.info("📊 سیستم گزارش‌دهی شبانه فعال شد")
     application.run_polling()
+if __name__ == '__main__':
+    main()
