@@ -1277,6 +1277,7 @@ async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT
                 summary_text,
                 reply_markup=get_student_details_keyboard()
             )
+            return STUDENT_DETAILS
             
         except Exception as e:
             logger.error(f"Error in handle_student_selection: {e}")
@@ -1310,7 +1311,7 @@ async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_T
                 "❌ دانش‌آموزی انتخاب نشده است.",
                 reply_markup=get_student_details_keyboard()
             )
-            return
+            return STUDENT_DETAILS
         
         # دریافت گزارش ۷ روز
         report = get_student_detailed_report_7days(student_id)
@@ -1419,7 +1420,7 @@ async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_T
                 "❌ دانش‌آموزی انتخاب نشده است.",
                 reply_markup=get_student_details_keyboard()
             )
-            return
+            return STUDENT_DETAILS
         
         # گزارش روز قبل
         yesterday = datetime.now(IRAN_TZ) - timedelta(days=1)
