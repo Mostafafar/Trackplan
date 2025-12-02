@@ -3129,9 +3129,10 @@ def main():
             STUDENT_REPORTS: [  # حالت جدید
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_reports)
             ],
-            STUDENT_DETAILS: [  # حالت جدید
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_selection),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_details)
+            STUDENT_DETAILS: [
+                MessageHandler(filters.TEXT & filters.Regex("^(🔙 بازگشت به لیست دانش‌آموزان|🎓 .*)$"), handle_student_selection),
+                MessageHandler(filters.TEXT & filters.Regex("^(📅 گزارش ۷ روز اخیر|📊 گزارش روزانه \(دیروز\)|🔙 بازگشت)$"), handle_student_details)
+    
             ]
         },
         fallbacks=[CommandHandler('start', start)],
