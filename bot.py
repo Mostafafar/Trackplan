@@ -158,6 +158,190 @@ def init_database():
     
     create_default_admin()
     conn.close()
+# در بخش توابع دیتابیس بعد از get_all_students_daily_activity اضافه کنید:
+def get_student_reports_keyboard():
+    """کیبورد گزارش‌های دانش‌آموزی"""
+    keyboard = [
+        ["📊 گزارش کلی ۷ روز اخیر"],
+        ["🔙 بازگشت به پنل ادمین"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_students_list_keyboard():
+    """ایجاد کیبورد لیست دانش‌آموزان به ترتیب مطالعه"""
+    students = get_students_by_study_time_7days()
+    
+    if not students:
+        return get_back_keyboard()
+    
+    keyboard = []
+    for student in students[:15]:  # حداکثر ۱۵ دانش‌آموز
+        hours = student['total_study_minutes'] // 60
+        minutes = student['total_study_minutes'] % 60
+        
+        if hours > 0:
+            time_text = f"⏱️ {hours}:{minutes:02d} ساعت"
+        else:
+            time_text = f"⏱️ {minutes} دقیقه"
+        
+        button_text = f"🎓 {student['full_name']} - {student['grade']} - {time_text}"
+        keyboard.append([button_text])
+    
+    keyboard.append(["🔙 بازگشت به گزارش‌ها"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_student_details_keyboard():
+    """کیبورد جزئیات دانش‌آموز"""
+    keyboard = [
+        ["📅 گزارش ۷ روز اخیر"],
+        ["📊 گزارش روزانه (دیروز)"],
+        ["🔙 بازگشت به لیست دانش‌آموزان"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_students_by_study_time_7days():
+    """دریافت دانش‌آموزان به ترتیب مجموع مطالعه در ۷ روز گذشته"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT 
+                s.id,
+                s.full_name,
+                s.grade,
+                s.advisor_id,
+                COALESCE(SUM(ss.total_duration), 0) as total_study_minutes,
+                COUNT(ss.id) as total_sessions,
+                MAX(ss.start_time) as last_study_time
+            FROM students s
+            LEFT JOIN study_sessions ss ON s.id = ss.student_id 
+                AND ss.start_time >= NOW() - INTERVAL '7 days'
+                AND ss.status = 'completed'
+            GROUP BY s.id, s.full_name, s.grade, s.advisor_id
+            ORDER BY total_study_minutes DESC, s.full_name
+        """)
+        result = cursor.fetchall()
+    conn.close()
+    return result
+
+def get_student_detailed_report_7days(student_id: int):
+    """دریافت گزارش جزئیات مطالعه دانش‌آموز در ۷ روز گذشته"""
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        # اطلاعات دانش‌آموز
+        cursor.execute("""
+            SELECT s.*, a.full_name as advisor_name
+            FROM students s
+            LEFT JOIN advisors a ON s.advisor_id = a.id
+            WHERE s.id = %s
+        """, (student_id,))
+        student_info = cursor.fetchone()
+        
+        # جلسات مطالعه ۷ روز گذشته
+        cursor.execute("""
+            SELECT 
+                ss.*,
+                DATE(ss.start_time AT TIME ZONE 'Asia/Tehran') as study_date,
+                TO_CHAR(ss.start_time AT TIME ZONE 'Asia/Tehran', 'HH24:MI') as start_time_fa,
+                TO_CHAR(ss.end_time AT TIME ZONE 'Asia/Tehran', 'HH24:MI') as end_time_fa,
+                (
+                    SELECT COUNT(*) 
+                    FROM progress_checks pc 
+                    WHERE pc.session_id = ss.id
+                ) as check_count
+            FROM study_sessions ss
+            WHERE ss.student_id = %s 
+                AND ss.start_time >= NOW() - INTERVAL '7 days'
+                AND ss.status = 'completed'
+            ORDER BY ss.start_time DESC
+        """, (student_id,))
+        sessions = cursor.fetchall()
+        
+        # چک‌های هر جلسه
+        sessions_with_checks = []
+        for session in sessions:
+            cursor.execute("""
+                SELECT 
+                    pc.*,
+                    TO_CHAR(pc.check_time AT TIME ZONE 'Asia/Tehran', 'HH24:MI') as check_time_fa
+                FROM progress_checks pc
+                WHERE pc.session_id = %s
+                ORDER BY pc.check_time
+            """, (session['id'],))
+            checks = cursor.fetchall()
+            session['checks'] = checks
+            sessions_with_checks.append(session)
+        
+        # آمار کلی
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_sessions,
+                COALESCE(SUM(total_duration), 0) as total_minutes,
+                AVG(total_duration) as avg_duration
+            FROM study_sessions
+            WHERE student_id = %s 
+                AND start_time >= NOW() - INTERVAL '7 days'
+                AND status = 'completed'
+        """, (student_id,))
+        stats = cursor.fetchone()
+        
+    conn.close()
+    
+    return {
+        'student': student_info,
+        'sessions': sessions_with_checks,
+        'stats': stats
+    }
+def get_student_daily_report(student_id: int, date: datetime = None):
+    """گزارش روزانه دانش‌آموز برای یک روز خاص"""
+    if date is None:
+        date = datetime.now(IRAN_TZ) - timedelta(days=1)  # روز قبل
+    
+    start_of_day = date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = date.replace(hour=23, minute=59, second=59, microsecond=999999)
+    
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        # اطلاعات دانش‌آموز
+        cursor.execute("SELECT * FROM students WHERE id = %s", (student_id,))
+        student_info = cursor.fetchone()
+        
+        # جلسات مطالعه روز قبل
+        cursor.execute("""
+            SELECT 
+                ss.*,
+                TO_CHAR(ss.start_time AT TIME ZONE 'Asia/Tehran', 'HH24:MI') as start_time_fa,
+                TO_CHAR(ss.end_time AT TIME ZONE 'Asia/Tehran', 'HH24:MI') as end_time_fa
+            FROM study_sessions ss
+            WHERE ss.student_id = %s 
+                AND ss.start_time >= %s
+                AND ss.start_time <= %s
+                AND ss.status = 'completed'
+            ORDER BY ss.start_time
+        """, (student_id, start_of_day, end_of_day))
+        sessions = cursor.fetchall()
+        
+        # آمار روز
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_sessions,
+                COALESCE(SUM(total_duration), 0) as total_minutes,
+                AVG(total_duration) as avg_duration
+            FROM study_sessions
+            WHERE student_id = %s 
+                AND start_time >= %s
+                AND start_time <= %s
+                AND status = 'completed'
+        """, (student_id, start_of_day, end_of_day))
+        stats = cursor.fetchone()
+        
+    conn.close()
+    
+    return {
+        'student': student_info,
+        'sessions': sessions,
+        'stats': stats,
+        'date': date
+    }
 
 def create_study_plan(day_number: int, day_description: str, grade: str, subjects: List[Dict], created_by: int):
     """ایجاد برنامه درسی"""
@@ -853,7 +1037,336 @@ def get_edit_plan_details_keyboard():
         ["🎓 تغییر پایه تحصیلی", "🔙 بازگشت"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
+async def handle_student_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت گزارش‌های دانش‌آموزی"""
+    text = update.message.text
+    user = update.effective_user
+    
+    if not is_admin(user.id):
+        await update.message.reply_text(
+            "❌ فقط ادمین‌ها می‌توانند به این بخش دسترسی داشته باشند.",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return ADMIN_PANEL
+    
+    if text == "🔙 بازگشت به پنل ادمین":
+        await update.message.reply_text(
+            "پنل ادمین:",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return ADMIN_PANEL
+    
+    elif text == "📊 گزارش کلی ۷ روز اخیر":
+        # دریافت لیست دانش‌آموزان به ترتیب مطالعه
+        students = get_students_by_study_time_7days()
+        
+        if not students:
+            await update.message.reply_text(
+                "📊 هیچ فعالیت مطالعاتی در ۷ روز اخیر ثبت نشده است.",
+                reply_markup=get_student_reports_keyboard()
+            )
+            return STUDENT_REPORTS
+        
+        # نمایش خلاصه
+        summary_text = "📊 گزارش ۷ روز اخیر:\n\n"
+        summary_text += "📈 رتبه‌بندی بر اساس میزان مطالعه:\n\n"
+        
+        for i, student in enumerate(students[:10], 1):  # ۱۰ نفر اول
+            hours = student['total_study_minutes'] // 60
+            minutes = student['total_study_minutes'] % 60
+            
+            emoji = "🥇" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else f"{i}."))
+            
+            if hours > 0:
+                time_text = f"{hours}:{minutes:02d} ساعت"
+            else:
+                time_text = f"{minutes} دقیقه"
+            
+            summary_text += f"{emoji} {student['full_name']} ({student['grade']})\n"
+            summary_text += f"   ⏱️ مجموع مطالعه: {time_text}\n"
+            summary_text += f"   📚 تعداد جلسات: {student['total_sessions']}\n\n"
+        
+        summary_text += "\nبرای مشاهده جزئیات هر دانش‌آموز، از لیست زیر انتخاب کنید:"
+        
+        await update.message.reply_text(
+            summary_text,
+            reply_markup=get_students_list_keyboard()
+        )
+        context.user_data['report_mode'] = '7days'
+        return STUDENT_DETAILS
+    
+    else:
+        await update.message.reply_text(
+            "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
+            reply_markup=get_student_reports_keyboard()
+    )
+async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت انتخاب دانش‌آموز از لیست"""
+    text = update.message.text
+    user = update.effective_user
+    
+    if not is_admin(user.id):
+        await update.message.reply_text(
+            "❌ فقط ادمین‌ها می‌توانند به این بخش دسترسی داشته باشند.",
+            reply_markup=get_admin_panel_keyboard()
+        )
+        return ADMIN_PANEL
+    
+    if text == "🔙 بازگشت به گزارش‌ها":
+        await update.message.reply_text(
+            "📊 گزارش‌های دانش‌آموزی:",
+            reply_markup=get_student_reports_keyboard()
+        )
+        return STUDENT_REPORTS
+    
+    if text.startswith("🎓 "):
+        try:
+            # استخراج نام دانش‌آموز از متن دکمه
+            parts = text.split(" - ")
+            student_name = parts[0].replace("🎓 ", "").strip()
+            
+            # پیدا کردن دانش‌آموز در دیتابیس
+            students = get_students_by_study_time_7days()
+            selected_student = None
+            
+            for student in students:
+                if student['full_name'] == student_name:
+                    selected_student = student
+                    break
+            
+            if not selected_student:
+                await update.message.reply_text(
+                    "❌ دانش‌آموز یافت نشد.",
+                    reply_markup=get_students_list_keyboard()
+                )
+                return STUDENT_DETAILS
+            
+            # ذخیره اطلاعات دانش‌آموز در context
+            context.user_data['selected_student_id'] = selected_student['id']
+            context.user_data['selected_student_name'] = selected_student['full_name']
+            
+            # نمایش خلاصه اطلاعات
+            hours = selected_student['total_study_minutes'] // 60
+            minutes = selected_student['total_study_minutes'] % 60
+            
+            if hours > 0:
+                time_text = f"{hours}:{minutes:02d} ساعت"
+            else:
+                time_text = f"{minutes} دقیقه"
+            
+            advisor = get_advisor_by_id(selected_student['advisor_id'])
+            advisor_name = advisor['full_name'] if advisor else "تعیین نشده"
+            
+            summary_text = (
+                f"👤 دانش‌آموز: {selected_student['full_name']}\n"
+                f"📚 پایه: {selected_student['grade']}\n"
+                f"👨‍🏫 مشاور: {advisor_name}\n"
+                f"📈 عملکرد ۷ روز اخیر:\n"
+                f"  ⏱️ مجموع مطالعه: {time_text}\n"
+                f"  📚 تعداد جلسات: {selected_student['total_sessions']}\n\n"
+                f"لطفاً نوع گزارش را انتخاب کنید:"
+            )
+            
+            await update.message.reply_text(
+                summary_text,
+                reply_markup=get_student_details_keyboard()
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in handle_student_selection: {e}")
+            await update.message.reply_text(
+                "❌ خطا در پردازش اطلاعات دانش‌آموز.",
+                reply_markup=get_students_list_keyboard()
+            )
+    
+    else:
+        await update.message.reply_text(
+            "لطفاً یکی از دانش‌آموزان را انتخاب کنید:",
+            reply_markup=get_students_list_keyboard()
+        )
+async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت جزئیات گزارش دانش‌آموز"""
+    text = update.message.text
+    user_data = context.user_data
+    
+    if text == "🔙 بازگشت به لیست دانش‌آموزان":
+        await update.message.reply_text(
+            "📊 لیست دانش‌آموزان بر اساس میزان مطالعه ۷ روز اخیر:",
+            reply_markup=get_students_list_keyboard()
+        )
+        return STUDENT_DETAILS
+    
+    elif text == "📅 گزارش ۷ روز اخیر":
+        student_id = user_data.get('selected_student_id')
+        
+        if not student_id:
+            await update.message.reply_text(
+                "❌ دانش‌آموزی انتخاب نشده است.",
+                reply_markup=get_student_details_keyboard()
+            )
+            return
+        
+        # دریافت گزارش ۷ روز
+        report = get_student_detailed_report_7days(student_id)
+        
+        if not report['sessions']:
+            await update.message.reply_text(
+                f"📊 هیچ فعالیت مطالعاتی در ۷ روز اخیر برای {report['student']['full_name']} ثبت نشده است.",
+                reply_markup=get_student_details_keyboard()
+            )
+            return
+        
+        # ساخت گزارش
+        report_text = f"📊 گزارش ۷ روز اخیر {report['student']['full_name']}\n"
+        report_text += f"📚 پایه: {report['student']['grade']}\n"
+        report_text += f"👨‍🏫 مشاور: {report['student']['advisor_name'] or 'تعیین نشده'}\n"
+        report_text += "─" * 30 + "\n\n"
+        
+        # گروه‌بندی بر اساس تاریخ
+        sessions_by_date = {}
+        for session in report['sessions']:
+            date_key = session['study_date']
+            if date_key not in sessions_by_date:
+                sessions_by_date[date_key] = []
+            sessions_by_date[date_key].append(session)
+        
+        # نمایش برای هر تاریخ
+        for date_key in sorted(sessions_by_date.keys(), reverse=True):
+            # تبدیل تاریخ به شمسی (ساده)
+            try:
+                date_obj = datetime.strptime(str(date_key), '%Y-%m-%d')
+                jalali_date = date_obj.strftime('%Y/%m/%d')
+            except:
+                jalali_date = str(date_key)
+            
+            report_text += f"📅 {jalali_date}:\n"
+            
+            daily_minutes = 0
+            for session in sessions_by_date[date_key]:
+                hours = session['total_duration'] // 60
+                minutes = session['total_duration'] % 60
+                daily_minutes += session['total_duration']
+                
+                if hours > 0:
+                    duration_text = f"{hours}:{minutes:02d} ساعت"
+                else:
+                    duration_text = f"{minutes} دقیقه"
+                
+                report_text += f"  🕐 {session['start_time_fa']} - {session['end_time_fa']}\n"
+                report_text += f"  📚 {session['subject_name']}\n"
+                report_text += f"  ⏱️ مدت: {duration_text}\n"
+                report_text += f"  🔢 چک‌ها: {session['check_count']}\n"
+                
+                # نمایش چک‌ها
+                if session['checks']:
+                    report_text += f"  📋 پاسخ‌ها:\n"
+                    for check in session['checks']:
+                        response_text = check.get('student_response', 'بدون پاسخ')
+                        report_text += f"    • {check['check_time_fa']}: {response_text}\n"
+                
+                report_text += "\n"
+            
+            # مجموع روز
+            daily_hours = daily_minutes // 60
+            daily_min = daily_minutes % 60
+            if daily_hours > 0:
+                daily_total = f"{daily_hours}:{daily_min:02d} ساعت"
+            else:
+                daily_total = f"{daily_min} دقیقه"
+            
+            report_text += f"  📈 مجموع روز: {daily_total}\n"
+            report_text += "─" * 30 + "\n\n"
+        
+        # آمار کلی
+        total_hours = report['stats']['total_minutes'] // 60
+        total_minutes = report['stats']['total_minutes'] % 60
+        
+        if total_hours > 0:
+            total_text = f"{total_hours}:{total_minutes:02d} ساعت"
+        else:
+            total_text = f"{total_minutes} دقیقه"
+        
+        report_text += f"📈 آمار کلی ۷ روز اخیر:\n"
+        report_text += f"  ⏱️ مجموع مطالعه: {total_text}\n"
+        report_text += f"  📚 تعداد جلسات: {report['stats']['total_sessions']}\n"
+        report_text += f"  ⏱️ میانگین هر جلسه: {int(report['stats']['avg_duration'] or 0)} دقیقه\n"
+        
+        # اگر گزارش طولانی شد، آن را تقسیم کنیم
+        if len(report_text) > 4000:
+            parts = [report_text[i:i+4000] for i in range(0, len(report_text), 4000)]
+            for i, part in enumerate(parts):
+                if i == 0:
+                    await update.message.reply_text(part, reply_markup=get_student_details_keyboard())
+                else:
+                    await update.message.reply_text(part)
+        else:
+            await update.message.reply_text(
+                report_text,
+                reply_markup=get_student_details_keyboard()
+            )
+    
+    elif text == "📊 گزارش روزانه (دیروز)":
+        student_id = user_data.get('selected_student_id')
+        
+        if not student_id:
+            await update.message.reply_text(
+                "❌ دانش‌آموزی انتخاب نشده است.",
+                reply_markup=get_student_details_keyboard()
+            )
+            return
+        
+        # گزارش روز قبل
+        yesterday = datetime.now(IRAN_TZ) - timedelta(days=1)
+        report = get_student_daily_report(student_id, yesterday)
+        
+        if not report['sessions']:
+            await update.message.reply_text(
+                f"📊 هیچ فعالیت مطالعاتی در تاریخ {yesterday.strftime('%Y/%m/%d')} برای {report['student']['full_name']} ثبت نشده است.",
+                reply_markup=get_student_details_keyboard()
+            )
+            return
+        
+        # ساخت گزارش روزانه
+        date_text = yesterday.strftime('%Y/%m/%d')
+        
+        report_text = f"📊 گزارش روزانه {report['student']['full_name']}\n"
+        report_text += f"📅 تاریخ: {date_text}\n"
+        report_text += f"📚 پایه: {report['student']['grade']}\n"
+        report_text += "─" * 30 + "\n\n"
+        
+        total_minutes = 0
+        for session in report['sessions']:
+            hours = session['total_duration'] // 60
+            minutes = session['total_duration'] % 60
+            total_minutes += session['total_duration']
+            
+            if hours > 0:
+                duration_text = f"{hours}:{minutes:02d} ساعت"
+            else:
+                duration_text = f"{minutes} دقیقه"
+            
+            report_text += f"🕐 {session['start_time_fa']} - {session['end_time_fa']}\n"
+            report_text += f"📚 {session['subject_name']}\n"
+            report_text += f"⏱️ مدت: {duration_text}\n"
+            report_text += "─" * 20 + "\n"
+        
+        # جمع کل
+        total_hours = total_minutes // 60
+        total_min = total_minutes % 60
+        
+        if total_hours > 0:
+            total_text = f"{total_hours}:{total_min:02d} ساعت"
+        else:
+            total_text = f"{total_min} دقیقه"
+        
+        report_text += f"\n📈 آمار روز:\n"
+        report_text += f"  ⏱️ مجموع مطالعه: {total_text}\n"
+        report_text += f"  📚 تعداد جلسات: {len(report['sessions'])}\n"
+        
+        await update.message.reply_text(
+            report_text,
+            reply_markup=get_student_details_keyboard()
+                )
 # --- Handlers ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
