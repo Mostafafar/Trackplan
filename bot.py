@@ -1399,14 +1399,100 @@ async def handle_student_reports(update: Update, context: ContextTypes.DEFAULT_T
             summary_text,
             reply_markup=get_students_list_keyboard()
         )
-        context.user_data['report_mode'] = '7days'
-        return STUDENT_DETAILS
+        return STUDENT_DETAILS  # تغییر از STUDENT_DETAILS به STUDENT_DETAILS
+    
+    # =========== قسمت جدید ===========
+    # اگر کاربر روی دکمه دانش‌آموز کلیک کرد
+    elif "🎓" in text:
+        try:
+            # استخراج نام دانش‌آموز از متن دکمه
+            # فرمت دکمه: "🎓 نام دانش‌آموز"
+            student_name_full = text.replace("🎓 ", "").strip()
+            
+            # پیدا کردن دانش‌آموز در دیتابیس با نام کامل
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, full_name, grade, advisor_id
+                    FROM students 
+                    WHERE full_name = %s
+                """, (student_name_full,))
+                selected_student = cursor.fetchone()
+            conn.close()
+            
+            if not selected_student:
+                await update.message.reply_text(
+                    f"❌ دانش‌آموز '{student_name_full}' یافت نشد.",
+                    reply_markup=get_students_list_keyboard()
+                )
+                return STUDENT_REPORTS
+            
+            # ذخیره اطلاعات دانش‌آموز در context
+            context.user_data['selected_student_id'] = selected_student['id']
+            context.user_data['selected_student_name'] = selected_student['full_name']
+            
+            # نمایش خلاصه اطلاعات
+            # دریافت آمار ۷ روزه برای این دانش‌آموز
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        COALESCE(SUM(ss.total_duration), 0) as total_study_minutes,
+                        COUNT(ss.id) as total_sessions,
+                        MAX(ss.start_time) as last_study_time
+                    FROM students s
+                    LEFT JOIN study_sessions ss ON s.id = ss.student_id 
+                        AND ss.start_time >= NOW() - INTERVAL '7 days'
+                        AND ss.status = 'completed'
+                    WHERE s.id = %s
+                    GROUP BY s.id
+                """, (selected_student['id'],))
+                stats = cursor.fetchone()
+            conn.close()
+            
+            total_minutes = stats['total_study_minutes'] if stats else 0
+            hours = total_minutes // 60
+            minutes = total_minutes % 60
+            
+            if hours > 0:
+                time_text = f"{hours}:{minutes:02d} ساعت"
+            else:
+                time_text = f"{minutes} دقیقه"
+            
+            advisor = get_advisor_by_id(selected_student['advisor_id'])
+            advisor_name = advisor['full_name'] if advisor else "تعیین نشده"
+            
+            summary_text = (
+                f"👤 دانش‌آموز: {selected_student['full_name']}\n"
+                f"📚 پایه: {selected_student['grade']}\n"
+                f"👨‍🏫 مشاور: {advisor_name}\n"
+                f"📈 عملکرد ۷ روز اخیر:\n"
+                f"  ⏱️ مجموع مطالعه: {time_text}\n"
+                f"  📚 تعداد جلسات: {stats['total_sessions'] if stats else 0}\n\n"
+                f"لطفاً نوع گزارش را انتخاب کنید:"
+            )
+            
+            await update.message.reply_text(
+                summary_text,
+                reply_markup=get_student_details_keyboard()
+            )
+            return STUDENT_DETAILS
+            
+        except Exception as e:
+            logger.error(f"Error in handle_student_reports - student selection: {e}")
+            await update.message.reply_text(
+                "❌ خطا در پردازش اطلاعات دانش‌آموز.",
+                reply_markup=get_student_reports_keyboard()
+            )
+            return STUDENT_REPORTS
+    # =========== پایان قسمت جدید ===========
     
     else:
         await update.message.reply_text(
             "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
             reply_markup=get_student_reports_keyboard()
-    )
+        )
+        return STUDENT_REPORTS
 async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب دانش‌آموز از لیست"""
     text = update.message.text
@@ -1530,6 +1616,17 @@ async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_T
     """مدیریت جزئیات گزارش دانش‌آموز"""
     text = update.message.text
     user_data = context.user_data
+    
+    # بررسی اولیه - اگر دانش‌آموزی انتخاب نشده بود
+    if 'selected_student_id' not in user_data and text != "🔙 بازگشت به گزارش‌ها":
+        # اگر کاربر مستقیم به این حالت آمده، به لیست برگردان
+        await update.message.reply_text(
+            "📊 لطفاً ابتدا دانش‌آموز را انتخاب کنید:",
+            reply_markup=get_students_list_keyboard()
+        )
+        return STUDENT_REPORTS
+    
+    # بقیه کد تابع مانند قبل...
     
     if text == "🔙 بازگشت به لیست دانش‌آموزان":
         await update.message.reply_text(
@@ -3376,8 +3473,15 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_reports)
             ],
             # در بخش ConversationHandler در تابع main()، حالت STUDENT_DETAILS را اصلاح کنید:
+        states={
+            STUDENT_REPORTS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_reports)
+            ],
             STUDENT_DETAILS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_details)
+    ]
+    # ... سایر حالت‌ها ...
+},
 
         
     
