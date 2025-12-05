@@ -3129,9 +3129,10 @@ def main():
             STUDENT_REPORTS: [  # حالت جدید
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_reports)
             ],
+            # در بخش ConversationHandler در تابع main()، حالت STUDENT_DETAILS را اصلاح کنید:
             STUDENT_DETAILS: [
-                MessageHandler(filters.TEXT & filters.Regex("^(🔙 بازگشت به لیست دانش‌آموزان|🎓 .*)$"), handle_student_selection),
-                MessageHandler(filters.TEXT & filters.Regex("^(📅 گزارش ۷ روز اخیر|📊 گزارش روزانه \(دیروز\)|🔙 بازگشت)$"), handle_student_details)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_details)
+        
     
             ]
         },
