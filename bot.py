@@ -1291,7 +1291,8 @@ async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT
             "لطفاً یکی از دانش‌آموزان را انتخاب کنید:",
             reply_markup=get_students_list_keyboard()
         )
-async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+6async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت جزئیات گزارش دانش‌آموز"""
     text = update.message.text
     user_data = context.user_data
@@ -1321,7 +1322,7 @@ async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_T
                 f"📊 هیچ فعالیت مطالعاتی در ۷ روز اخیر برای {report['student']['full_name']} ثبت نشده است.",
                 reply_markup=get_student_details_keyboard()
             )
-            return
+            return STUDENT_DETAILS
         
         # ساخت گزارش
         report_text = f"📊 گزارش ۷ روز اخیر {report['student']['full_name']}\n"
@@ -1411,6 +1412,7 @@ async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_T
                 report_text,
                 reply_markup=get_student_details_keyboard()
             )
+        return STUDENT_DETAILS
     
     elif text == "📊 گزارش روزانه (دیروز)":
         student_id = user_data.get('selected_student_id')
@@ -1431,7 +1433,7 @@ async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_T
                 f"📊 هیچ فعالیت مطالعاتی در تاریخ {yesterday.strftime('%Y/%m/%d')} برای {report['student']['full_name']} ثبت نشده است.",
                 reply_markup=get_student_details_keyboard()
             )
-            return
+            return STUDENT_DETAILS
         
         # ساخت گزارش روزانه
         date_text = yesterday.strftime('%Y/%m/%d')
@@ -1473,7 +1475,17 @@ async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(
             report_text,
             reply_markup=get_student_details_keyboard()
-                )
+        )
+        return STUDENT_DETAILS
+    
+    else:
+        # اگر کاربر دکمه دیگری زد
+        await update.message.reply_text(
+            "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
+            reply_markup=get_student_details_keyboard()
+        )
+        return STUDENT_DETAILS
+
 # --- Handlers ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
