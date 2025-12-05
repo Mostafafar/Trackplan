@@ -1253,6 +1253,18 @@ async def send_nightly_reports(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ خطا در ارسال گزارش به {student['full_name']}: {e}")
     
     logger.info(f"📊 ارسال گزارش‌های شبانه پایان یافت. ارسال شده: {sent_count}, ناموفق: {failed_count}")
+async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت جزئیات گزارش دانش‌آموز"""
+    text = update.message.text
+    user_data = context.user_data
+    
+    # لاگ برای دیباگ
+    logger.info(f"handle_student_details called with text: {text}")
+    logger.info(f"User data keys: {list(user_data.keys())}")
+    logger.info(f"Selected student ID in user_data: {user_data.get('selected_student_id')}")
+    
+    if text == "🔙 بازگشت به لیست دانش‌آموزان":
+        # ...
 async def handle_student_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت گزارش‌های دانش‌آموزی"""
     text = update.message.text
@@ -3287,6 +3299,7 @@ def main():
             # در بخش ConversationHandler در تابع main()، حالت STUDENT_DETAILS را اصلاح کنید:
             STUDENT_DETAILS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_details)
+
         
     
             ]
