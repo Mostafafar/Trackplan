@@ -1292,7 +1292,7 @@ async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT
             reply_markup=get_students_list_keyboard()
         )
 
-6async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_student_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت جزئیات گزارش دانش‌آموز"""
     text = update.message.text
     user_data = context.user_data
