@@ -3423,72 +3423,61 @@ def main():
     
     # ایجاد Conversation Handler با حالت‌های جدید
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            GRADE_SELECTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
-            ],
-            SELECT_ADVISOR: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
-            ],
-            SELECT_DAY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_day_selection)
-            ],
-            SELECT_SUBJECT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_subject_selection)
-            ],
-            STUDENT_PANEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_management),
-                MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|⏹️ اتمام مطالعه)$"), 
-                             handle_progress_check_response)
-            ],
-            ADMIN_PANEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
-            ],
-            PLAN_DAY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_day)
-            ],
-            PLAN_GRADE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_grade)
-            ],
-            PLAN_SUBJECTS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_subjects)
-            ],
-            BROADCAST_MESSAGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_message)
-            ],
-            ADD_ADVISOR: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_advisor)
-            ],
-            EDIT_PLANS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plans)
-            ],
-            EDIT_PLAN_DETAIL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_actions)
-            ],
-            EDIT_PLAN_SUBJECTS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plan_subjects)
-            ],
-            STUDENT_REPORTS: [  # حالت جدید
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_reports)
-            ],
-            # در بخش ConversationHandler در تابع main()، حالت STUDENT_DETAILS را اصلاح کنید:
-        states={
-            STUDENT_REPORTS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_reports)
-            ],
-            STUDENT_DETAILS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_details)
-    ]
-    # ... سایر حالت‌ها ...
-},
-
-        
-    
-            
-        },
-        fallbacks=[CommandHandler('start', start)],
-        allow_reentry=True
+    entry_points=[CommandHandler('start', start)],
+    states={
+        GRADE_SELECTION: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_grade_selection)
+        ],
+        SELECT_ADVISOR: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_advisor_selection)
+        ],
+        SELECT_DAY: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_day_selection)
+        ],
+        SELECT_SUBJECT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_subject_selection)
+        ],
+        STUDENT_PANEL: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_study_management),
+            MessageHandler(filters.TEXT & filters.Regex("^(✅ در حال پیشرفت|⚠️ مشکل دارم|❌ متوقف کردم|⏹️ اتمام مطالعه)$"), 
+                         handle_progress_check_response)
+        ],
+        ADMIN_PANEL: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_panel)
+        ],
+        PLAN_DAY: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_day)
+        ],
+        PLAN_GRADE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_grade)
+        ],
+        PLAN_SUBJECTS: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_subjects)
+        ],
+        BROADCAST_MESSAGE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_message)
+        ],
+        ADD_ADVISOR: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_advisor)
+        ],
+        EDIT_PLANS: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plans)
+        ],
+        EDIT_PLAN_DETAIL: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plan_actions)
+        ],
+        EDIT_PLAN_SUBJECTS: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_plan_subjects)
+        ],
+        STUDENT_REPORTS: [  # حالت جدید
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_reports)
+        ],
+        STUDENT_DETAILS: [  # حالت جدید
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_details)
+        ]
+    },
+    fallbacks=[CommandHandler('start', start)],
+    allow_reentry=True
     )
     
     application.add_handler(conv_handler)
