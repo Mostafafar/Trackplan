@@ -3485,7 +3485,7 @@ def main():
 
         
     
-            ]
+            
         },
         fallbacks=[CommandHandler('start', start)],
         allow_reentry=True
