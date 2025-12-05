@@ -167,6 +167,14 @@ def get_student_reports_keyboard():
         ["🔙 بازگشت به پنل ادمین"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+def get_student_details_keyboard():
+    """کیبورد جزئیات گزارش دانش‌آموز"""
+    keyboard = [
+        ["📅 گزارش ۷ روز اخیر"],
+        ["📊 گزارش روزانه (دیروز)"],
+        ["🔙 بازگشت به لیست دانش‌آموزان"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت انتخاب دانش‌آموز از لیست"""
